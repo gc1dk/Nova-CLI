@@ -1,0 +1,41 @@
+{
+  "name": "nova-mail-cli",
+  "version": "0.2.0",
+  "description": "NOVA Mail CLI — an open-source, interactive command-line companion to NOVA Mail (https://nova-email.com). Read, send, and manage mail, with an optional BYO-agent AI bridge (experimental, not recommended).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "nova": "bin/nova.mjs"
+  },
+  "files": [
+    "bin",
+    "install",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "nova",
+    "email",
+    "cli",
+    "encrypted-email",
+    "privacy",
+    "terminal",
+    "mail"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gc1dk/Nova-CLI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gc1dk/Nova-CLI/issues"
+  },
+  "homepage": "https://github.com/gc1dk/Nova-CLI#readme",
+  "author": "Gc1dk (a.k.a. Gc.idk)",
+  "scripts": {
+    "start": "node bin/nova.mjs"
+  }
+}
