@@ -14,7 +14,8 @@ Read, send, and manage your encrypted inbox right from the terminal — no passw
 
 ## ✨ Features
 
-- **Interactive menu** — run `nova` with no arguments for a full-screen, arrow-key TUI (Inbox · Read · Compose · Status · Log out).
+- **Interactive menu** — run `nova` with no arguments for a full-screen, arrow-key TUI (Inbox · Read · Compose · Status · Log out). Long lists paginate with **PgUp/PgDn**, **Home/End**, and **1–9** quick-pick; prompts support **←/→** cursor editing.
+- **Robust key input** — escape sequences are buffered and parsed per-token, so arrow keys keep working even when a terminal splits a sequence across network chunks (no accidental menu exits).
 - **One-shot commands** — `nova mailbox`, `nova read`, `nova send`, `nova delete` for scripting.
 - **Browser-based auth** — `nova login` opens your browser. After you sign in, NOVA sends a short-lived session token to `127.0.0.1` (your own machine) only.
 - **Custom boot screen** — animated ASCII `NOVA` logo, clean interface, no bloat.

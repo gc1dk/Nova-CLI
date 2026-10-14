@@ -17,8 +17,15 @@ Run `nova` with no arguments to open the full-screen menu:
 ```
 
 - **↑ / ↓** move, **Enter** selects.
+- **PgUp / PgDn** or **Home / End** jump within a long list.
+- **1–9** quick-pick the Nth visible item.
 - **q / Esc** goes back a level.
 - **Ctrl-C** quits.
+
+### Line prompts
+When typing (e.g. To / Subject / Body, or an AI key), the prompt supports full editing:
+**← / →** move the cursor, **Home / End** jump, **Backspace / Delete** remove,
+and artifacts from arrow keys no longer leak into your input.
 
 ### Inbox
 Lists your latest messages with sender, unread indicator and time. Pick one to read it.

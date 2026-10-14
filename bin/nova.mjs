@@ -26,7 +26,7 @@ import { spawn } from "node:child_process";
  * ------------------------------------------------------------------ */
 const APP_NAME = "NOVA Mail";
 const DEFAULT_BASE = "https://nova-email.com";
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const REPO = "https://github.com/gc1dk/Nova-CLI";
 const CONFIG_DIR = path.join(os.homedir(), ".nova");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -204,6 +204,99 @@ function disableRaw() {
   }
 }
 
+// ----------------------------------------------------------------------
+// Chunk-safe raw-mode input. Terminals may split an escape sequence
+// across multiple data chunks (and may send SS3/Csi sequences), so we
+// buffer input and parse whole key tokens from the stream rather than
+// reading byte-by-byte from a single chunk.
+// ----------------------------------------------------------------------
+
+const SS3_MAP = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
+const CSI_MAP = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
+const CSI_TILDE_MAP = { 1: "home", 3: "delete", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end" };
+
+// Consume one key token from the front of `buf`.
+// Returns { key, len } or null when more bytes are needed.
+function parseKey(buf) {
+  if (!buf) return null;
+  const c = buf[0];
+  if (c === "\u0003") return { key: "ctrl-c", len: 1 };
+  if (c === "\r" || c === "\n") return { key: "enter", len: 1 };
+  if (c === "\u007f" || c === "\b") return { key: "backspace", len: 1 };
+  if (c >= " ") {
+    const cp = buf.codePointAt(0);
+    const ch = String.fromCodePoint(cp);
+    return { key: ch, len: ch.length };
+  }
+  if (c !== "\u001b") return { key: null, len: 1 }; // swallow stray control bytes
+  if (buf.length === 1) return null; // bare ESC — ambiguous, wait for more
+  if (buf[1] === "O") {
+    if (buf.length < 3) return null;
+    const k = SS3_MAP[buf[2]];
+    return { key: k || null, len: 3 };
+  }
+  if (buf[1] === "[") {
+    let j = 2;
+    while (j < buf.length && (buf[j] >= "0" && buf[j] <= "9" || buf[j] === ";" || buf[j] === ":")) j++;
+    if (j >= buf.length) return null; // CSI unterminated — wait for final byte
+    const fin = buf[j];
+    const n = Number.parseInt(buf.slice(2, j), 10);
+    let key = CSI_MAP[fin];
+    if (!key && fin === "~") key = CSI_TILDE_MAP[Number.isNaN(n) ? 0 : n];
+    return { key: key || null, len: j + 1 };
+  }
+  return { key: null, len: 2 }; // ESC + other (Alt+key) — swallow
+}
+
+// A streaming key source that stays subscribed until close().
+function keyStream() {
+  let buf = "";
+  let queue = [];
+  let waiters = [];
+  let timer = null;
+  const deliver = (key) => {
+    const w = waiters.shift();
+    if (w) w(key);
+    else queue.push(key);
+  };
+  const flush = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    for (;;) {
+      const t = parseKey(buf);
+      if (!t) break;
+      buf = buf.slice(t.len);
+      if (t.key !== null) deliver(t.key);
+    }
+    // A lone ESC could be a real Esc press or the start of a sequence that
+    // hasn't arrived yet — disambiguate with a short delay.
+    if (buf === "\u001b") {
+      timer = setTimeout(() => {
+        timer = null;
+        buf = "";
+        deliver("\u001b");
+      }, 60);
+    }
+  };
+  const onData = (d) => {
+    buf += d;
+    flush();
+  };
+  process.stdin.on("data", onData);
+  return {
+    next() {
+      return new Promise((res) => {
+        if (queue.length) { res(queue.shift()); return; }
+        waiters.push(res);
+        flush();
+      });
+    },
+    close() {
+      process.stdin.off("data", onData);
+      if (timer) { clearTimeout(timer); timer = null; }
+    },
+  };
+}
+
 // Read a single line. opts.echo masks input (e.g. API keys).
 function readLine(prompt, opts = {}) {
   return new Promise((resolve) => {
@@ -214,33 +307,49 @@ function readLine(prompt, opts = {}) {
       process.stdin.once("data", (d) => resolve(String(d).replace(/[\r\n]+$/, "")));
       return;
     }
-    let buf = "";
-    const render = () => {
-      const shown = opts.echo ? opts.echo(buf) : buf;
-      process.stdout.write("\r" + prompt + shown + (shown.length ? " " : "") + "\x1b[K");
-    };
     enableRaw();
+    let buf = "";
+    let cur = 0;
+    const shown = () => (opts.echo ? opts.echo(buf) : buf);
+    const render = () => {
+      const s = shown();
+      process.stdout.write("\r" + prompt + s + (s.length ? " " : "") + "\x1b[K");
+      const col = (opts.echo ? opts.echo(buf.slice(0, cur)) : buf.slice(0, cur)).length;
+      process.stdout.write("\x1b[" + Math.max(0, s.length - col + 1) + "D");
+    };
     render();
-    const onData = (data) => {
-      for (const ch of data) {
-        if (ch === "\u0003") { disableRaw(); process.stdout.write("\n"); process.exit(1); }
-        if (ch === "\r" || ch === "\n") {
+    const ks = keyStream();
+    (async () => {
+      for (;;) {
+        const k = await ks.next();
+        if (k === "ctrl-c") { ks.close(); disableRaw(); process.stdout.write("\n"); process.exit(1); }
+        if (k === "enter") {
+          ks.close();
           disableRaw();
           process.stdout.write("\n");
-          process.stdin.off("data", onData);
           resolve(buf);
           return;
         }
-        if (ch === "\u007f" || ch === "\b") {
-          buf = buf.slice(0, -1);
+        if (k === "backspace") {
+          if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur--; render(); }
+          continue;
+        }
+        if (k === "delete") {
+          if (cur < buf.length) { buf = buf.slice(0, cur) + buf.slice(cur + 1); render(); }
+          continue;
+        }
+        if (k === "left") { if (cur > 0) { cur--; render(); } continue; }
+        if (k === "right") { if (cur < buf.length) { cur++; render(); } continue; }
+        if (k === "home") { cur = 0; render(); continue; }
+        if (k === "end") { cur = buf.length; render(); continue; }
+        if (typeof k === "string" && k.length === 1 && k >= " ") {
+          buf = buf.slice(0, cur) + k + buf.slice(cur);
+          cur++;
           render();
-        } else if (ch.charCodeAt(0) >= 32) {
-          buf += ch;
-          render();
+          continue;
         }
       }
-    };
-    process.stdin.on("data", onData);
+    })();
   });
 }
 
@@ -248,12 +357,12 @@ function readKey() {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) { resolve(""); return; }
     enableRaw();
-    const onData = (data) => {
+    const ks = keyStream();
+    ks.next().then((k) => {
+      ks.close();
       disableRaw();
-      process.stdin.off("data", onData);
-      resolve(data);
-    };
-    process.stdin.on("data", onData);
+      resolve(typeof k === "string" ? k : "");
+    });
   });
 }
 
@@ -265,59 +374,64 @@ function choose(items, prompt) {
       return;
     }
     let idx = 0;
+    const pageSize = Math.max(6, (process.stdout.rows || 24) - 8);
+    const top = () => Math.max(0, Math.min(idx - 2, Math.max(0, items.length - pageSize)));
     const draw = () => {
       process.stdout.write("\x1b[2J\x1b[H");
       bootScreen(prompt || "Select an option");
-      items.forEach((item, i) => {
-        if (i === idx) log("  " + paint("› ", c.cyan) + "  " + paint(item, c.bold));
+      const lo = top();
+      const list = items.slice(lo, lo + pageSize);
+      list.forEach((item, i) => {
+        if (lo + i === idx) log("  " + paint("› ", c.cyan) + "  " + paint(item, c.bold));
         else log("    " + item);
       });
       log("");
-      log(dim("  ↑/↓ navigate  ·  Enter select  ·  q/Esc back  ·  Ctrl-C quit"));
+      const nav = "  ↑/↓ navigate · Enter select · q/Esc back · Ctrl-C quit";
+      const paged = items.length > pageSize ? " · PgUp/PgDn page · 1-9 quick pick" : "";
+      log(dim(nav + paged));
     };
     enableRaw();
     draw();
-    const onData = (data) => {
-      for (let i = 0; i < data.length; i++) {
-        const ch = data[i];
-        if (ch === "\u0003") { disableRaw(); process.stdout.write("\n"); process.exit(1); }
-        if (ch === "\r" || ch === "\n") {
-          disableRaw();
-          process.stdin.off("data", onData);
-          process.stdout.write("\x1b[2J\x1b[H");
-          resolve(idx);
-          return;
-        }
-        if (ch === "\u001b" && data[i + 1] === "[") {
-          const code = data[i + 2];
-          if (code === "A") idx = (idx - 1 + items.length) % items.length;
-          else if (code === "B") idx = (idx + 1) % items.length;
-          i += 2;
-          draw();
-        } else if (ch === "q" || ch === "Q" || ch === "\u001b") {
-          disableRaw();
-          process.stdin.off("data", onData);
-          process.stdout.write("\x1b[2J\x1b[H");
-          resolve(-1);
-          return;
-        }
-      }
+    const ks = keyStream();
+    const done = (v) => {
+      ks.close();
+      disableRaw();
+      process.stdout.write("\x1b[2J\x1b[H");
+      resolve(v);
     };
-    process.stdin.on("data", onData);
+    (async () => {
+      for (;;) {
+        const k = await ks.next();
+        if (k === "ctrl-c") { disableRaw(); process.stdout.write("\n"); process.exit(1); }
+        if (k === "enter") { done(idx); return; }
+        const n = items.length;
+        if (k === "up") { idx = (idx - 1 + n) % n; draw(); continue; }
+        if (k === "down") { idx = (idx + 1) % n; draw(); continue; }
+        if (k === "pageup" || k === "home") { idx = Math.max(0, idx - pageSize); draw(); continue; }
+        if (k === "pagedown" || k === "end") { idx = Math.min(n - 1, idx + pageSize); draw(); continue; }
+        if (/^[1-9]$/.test(k)) {
+          const t = top();
+          if (t + Number(k) - 1 < n) { idx = t + Number(k) - 1; draw(); }
+          continue;
+        }
+        if (k === "q" || k === "Q" || k === "\u001b") { done(-1); return; }
+      }
+    })();
   });
 }
 
 function pauseScreen(msg = "Press any key to continue") {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) { process.stdout.write("\n"); resolve(); return; }
+    enableRaw();
     process.stdout.write("\n  " + dim(msg) + "  ");
-    const onData = () => {
+    const ks = keyStream();
+    ks.next().then(() => {
+      ks.close();
       disableRaw();
-      process.stdin.off("data", onData);
       process.stdout.write("\n");
       resolve();
-    };
-    process.stdin.on("data", onData);
+    });
   });
 }
 
@@ -464,8 +578,10 @@ async function listMessagesForPicker(folderName) {
   const folders = await api("/folders");
   const current = folders.find((f) => (folderName ? f.name.toLowerCase() === folderName.toLowerCase() : f.type === "inbox"));
   if (!current) return [];
-  const messages = await api(`/messages?folder_id=${encodeURIComponent(current.id)}`);
-  return messages || [];
+  const data = await api(`/messages?folder_id=${encodeURIComponent(current.id)}`);
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.messages)) return data.messages;
+  return [];
 }
 
 async function cmdRead(id) {
