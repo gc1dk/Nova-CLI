@@ -33,7 +33,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 // UTF-8 box-drawing and punctuation into mojibake. Bump the active console to
 // UTF-8 when we own an interactive terminal. Harmless elsewhere.
 if (process.platform === "win32" && process.stdout.isTTY) {
-  try { spawnSync("chcp", ["65001"], { stdio: "ignore", shell: true }); } catch { /* ignore */ }
+  try { spawnSync("chcp 65001", { stdio: "ignore", shell: true }); } catch { /* ignore */ }
 }
 
 /* ------------------------------------------------------------------ *
@@ -41,7 +41,7 @@ if (process.platform === "win32" && process.stdout.isTTY) {
  * ------------------------------------------------------------------ */
 const APP_NAME = "NOVA Mail";
 const DEFAULT_BASE = "https://nova-email.com";
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 const REPO = "https://github.com/gc1dk/Nova-CLI";
 const CONFIG_DIR = path.join(os.homedir(), ".nova");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
