@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * NOVA Mail CLI â€” https://github.com/gc1dk/Nova-CLI
+ * NOVA Mail CLI — https://github.com/gc1dk/Nova-CLI
  * A command-line companion to NOVA Mail (https://nova-email.com).
  *
- * MIT License Â· Copyright (c) 2026 Gc1dk (a.k.a. Gc.idk)
+ * MIT License · Copyright (c) 2026 Gc1dk (a.k.a. Gc.idk)
  *
  * Zero runtime dependencies. Runs on Node.js 18+.
  *
@@ -41,7 +41,7 @@ if (process.platform === "win32" && process.stdout.isTTY) {
  * ------------------------------------------------------------------ */
 const APP_NAME = "NOVA Mail";
 const DEFAULT_BASE = "https://nova-email.com";
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const REPO = "https://github.com/gc1dk/Nova-CLI";
 const CONFIG_DIR = path.join(os.homedir(), ".nova");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -101,27 +101,27 @@ const magenta = (s) => paint(s, c.magenta);
 const KEY = paint("N", c.cyan) + paint("O", c.magenta) + paint("V", c.green) + paint("A", c.yellow);
 
 const LOGO = `
-    â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
-    â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—
-    â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
-    â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘
-    â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â• â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•”â• â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘
-    â•šâ•â•  â•šâ•â•â•â• â•šâ•â•â•â•â•â•   â•šâ•â•â•â•  â•šâ•â•  â•šâ•â•`;
+    ███╗   ██╗ ██████╗ ██╗   ██╗ █████╗
+    ████╗  ██║██╔═══██╗██║   ██║██╔══██╗
+    ██╔██╗ ██║██║   ██║██║   ██║███████║
+    ██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║
+    ██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║
+    ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝`;
 
-const spinners = ["â ‹", "â ™", "â ¹", "â ¸", "â ¼", "â ´", "â ¦", "â §", "â ‡", "â "];
+const spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function log(...args) {
   process.stdout.write(args.join(" ") + "\n");
 }
 
 function err(msg) {
-  log(red(bold("âœ– ")) + red(String(msg)));
+  log(red(bold("✖ ")) + red(String(msg)));
   process.exitCode = 1;
 }
 
 // Consistent "not recommended / experimental" banner for anything AI.
 function aiBanner() {
-  log(yellow(bold("  âš  EXPERIMENTAL Â· NOT RECOMMENDED")));
+  log(yellow(bold("  ⚠ EXPERIMENTAL · NOT RECOMMENDED")));
   log(dim("  AI access is a BYO-agent bridge. NOVA itself runs no AI and never") +
        dim("  reads/trains on your mail. Use at your own risk; an AI agent can make") +
        dim("  mistakes and send mail you did not intend."));
@@ -134,7 +134,7 @@ function aiBanner() {
  * ------------------------------------------------------------------ */
 
 // Strip ANSI/escape sequences and control characters from anything we print
-// that came from the server (subjects, bodies, senders, previewsâ€¦). A hostile
+// that came from the server (subjects, bodies, senders, previews…). A hostile
 // message must not be able to move the cursor, recolor the UI, or clear the
 // screen. Keeps newline + tab.
 function sanitize(input) {
@@ -171,7 +171,7 @@ function truncate(s, maxWidth) {
   let w = 0;
   for (const ch of String(s)) {
     const cw = charWidth(ch.codePointAt(0));
-    if (w + cw > maxWidth) return out + (maxWidth - w >= 1 ? "â€¦" : "");
+    if (w + cw > maxWidth) return out + (maxWidth - w >= 1 ? "…" : "");
     out += ch;
     w += cw;
   }
@@ -187,7 +187,7 @@ function padStartW(s, width) {
 }
 
 /* ------------------------------------------------------------------ *
- *  Config â€” encrypted vault for secrets
+ *  Config — encrypted vault for secrets
  * ------------------------------------------------------------------ */
 
 function ensureDir() {
@@ -390,10 +390,10 @@ async function withSpinner(label, fn) {
   }, 80);
   try {
     const out = await fn();
-    process.stdout.write(`\r${green("âœ“")} ${label}\n`);
+    process.stdout.write(`\r${green("✓")} ${label}\n`);
     return out;
   } catch (e) {
-    process.stdout.write(`\r${red("âœ–")} ${label}\n`);
+    process.stdout.write(`\r${red("✖")} ${label}\n`);
     throw e;
   } finally {
     clearInterval(timer);
@@ -570,12 +570,12 @@ function choose(items, prompt) {
       const list = items.slice(lo, lo + pageSize);
       list.forEach((item, i) => {
         const label = sanitize(item);
-        if (lo + i === idx) log("  " + paint("â€º ", c.cyan) + "  " + paint(label, c.bold));
+        if (lo + i === idx) log("  " + paint("› ", c.cyan) + "  " + paint(label, c.bold));
         else log("    " + label);
       });
       log("");
-      const nav = "  â†‘/â†“ navigate Â· Enter select Â· q/Esc back Â· Ctrl-C quit";
-      const paged = items.length > pageSize ? " Â· PgUp/PgDn page Â· 1-9 quick pick" : "";
+      const nav = "  ↑/↓ navigate · Enter select · q/Esc back · Ctrl-C quit";
+      const paged = items.length > pageSize ? " · PgUp/PgDn page · 1-9 quick pick" : "";
       log(dim(nav + paged));
     };
     enableRaw();
@@ -703,12 +703,12 @@ function login() {
       const gotState = url.searchParams.get("state") || "";
       if (token && gotState === state) {
         res.writeHead(200);
-        res.end(page("âœ…", "#34d399", "NOVA is connected"));
+        res.end(page("✅", "#34d399", "NOVA is connected"));
         saveAuth(token, email);
         finish(true);
       } else {
         res.writeHead(200);
-        res.end(page("âš ï¸", "#f87171", "Sign-in failed â€” please try again"));
+        res.end(page("⚠️", "#f87171", "Sign-in failed — please try again"));
         finish(false);
       }
     });
@@ -722,7 +722,7 @@ function login() {
       let base;
       try { base = currentBase(); } catch (e) { err(e.message); finish(false); return; }
       const url = `${base}/login?cli=1&port=${port}&state=${state}`;
-      log(dim("  Waiting for your browser sign-inâ€¦"));
+      log(dim("  Waiting for your browser sign-in…"));
       const ok = openBrowser(url);
       if (!ok) {
         log(yellow("  Could not open a browser automatically."));
@@ -758,19 +758,19 @@ function decodeEntities(s) {
       const cp = ent[1] === "x" || ent[1] === "X" ? parseInt(ent.slice(2), 16) : parseInt(ent.slice(1), 10);
       return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
     }
-    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", copy: "Â©", reg: "Â®", trade: "â„¢", hellip: "â€¦", mdash: "â€”", ndash: "â€“", rsquo: "â€™", lsquo: "â€˜", rdquo: "â€", ldquo: "â€œ" };
+    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", copy: "©", reg: "®", trade: "™", hellip: "…", mdash: "—", ndash: "–", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“" };
     return Object.prototype.hasOwnProperty.call(named, ent) ? named[ent] : m;
   });
 }
 
-// Best-effort HTML â†’ readable plain text for terminal display.
+// Best-effort HTML → readable plain text for terminal display.
 function htmlToText(html) {
   let s = String(html || "");
   s = s.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<script[\s\S]*?<\/script>/gi, "");
   s = s.replace(/<!--[\s\S]*?-->/g, "");
   s = s.replace(/<br\s*\/?>/gi, "\n");
   s = s.replace(/<\/(p|div|tr|h[1-6]|li|table|blockquote|pre)>/gi, "\n");
-  s = s.replace(/<li[^>]*>/gi, "  â€¢ ");
+  s = s.replace(/<li[^>]*>/gi, "  • ");
   s = s.replace(/<[^>]+>/g, "");
   s = decodeEntities(s);
   return s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -811,7 +811,7 @@ function fmtRecipients(r) {
  *  Folder + message helpers
  * ------------------------------------------------------------------ */
 
-// GET /folders â†’ array of {id,name,type,unread_count}
+// GET /folders → array of {id,name,type,unread_count}
 async function getFolders() {
   const data = await api("/folders");
   return Array.isArray(data) ? data : (data && data.folders) || [];
@@ -901,8 +901,8 @@ async function cmdMailbox(folderName, { all = false, limit = 25, json = false } 
 
   log(bold(`  ${sanitize(current.name)}  `) + dim(`(${messages.length}${hasMore ? "+" : ""})`) + "\n");
   for (const m of messages) {
-    const unread = (m.flags & 1) === 0 ? bold("â—") : " ";
-    const star = (m.flags & 2) === 2 ? yellow("â˜…") : " ";
+    const unread = (m.flags & 1) === 0 ? bold("●") : " ";
+    const star = (m.flags & 2) === 2 ? yellow("★") : " ";
     const id = padEndW(String(m.id).slice(0, 8), 8);
     const sender = padEndW(truncate(displaySender(m) || "(unknown)", 24), 24);
     const when = padStartW(timeAgo(m.timestamp), 9);
@@ -910,7 +910,7 @@ async function cmdMailbox(folderName, { all = false, limit = 25, json = false } 
     log(dim("        " + truncate(sanitize(m.subject || "(no subject)"), 64)));
   }
   log("");
-  if (hasMore) log(dim(`  ${limit} shown â€” more available. Use --all for the rest, or --limit N.`));
+  if (hasMore) log(dim(`  ${limit} shown — more available. Use --all for the rest, or --limit N.`));
   log(dim("  Run `nova read <id>` to open a message."));
 }
 
@@ -937,9 +937,9 @@ async function cmdRead(id, { json = false, markRead = true } = {}) {
   log(dim("  From:  ") + sanitize(d.sender || ""));
   log(dim("  To:    ") + sanitize(to));
   log(dim("  Sent:  ") + new Date((d.timestamp || 0) * 1000).toLocaleString());
-  if (d.is_encrypted) log(dim("  ") + green("ðŸ”’ encrypted at rest"));
+  if (d.is_encrypted) log(dim("  ") + green("🔒 encrypted at rest"));
   log("");
-  log("  " + "â”€".repeat(60));
+  log("  " + "─".repeat(60));
   log("");
   const raw = d.body || "";
   const text = d.is_html ? htmlToText(raw) : String(raw);
@@ -987,10 +987,25 @@ async function cmdDelete(id, { permanent = false } = {}) {
 
 async function cmdMark(id, action) {
   const real = await resolveId(id);
-  const map = { read: "read", unread: "unread", star: "star", unstar: "star" };
-  const end = map[action];
-  if (!end) { err("Usage: nova mark <id> read|unread|star|unstar"); return; }
-  await api(`/messages/${encodeURIComponent(real)}/${end}`, { method: "POST" });
+  if (!["read", "unread", "star", "unstar"].includes(action)) {
+    err("Usage: nova mark <id> read|unread|star|unstar");
+    return;
+  }
+  // `/star` on the server is a toggle, so make star/unstar deterministic by
+  // checking the current flag first and only toggling when the state differs.
+  if (action === "star" || action === "unstar") {
+    const d = await api(`/messages/${encodeURIComponent(real)}`);
+    const isStarred = (Number(d.flags || 0) & 2) === 2;
+    const want = action === "star";
+    if (isStarred === want) {
+      log(dim(`  Already ${want ? "starred" : "unstarred"}: `) + real);
+      return;
+    }
+    await api(`/messages/${encodeURIComponent(real)}/star`, { method: "POST" });
+    log(green(`  ${action}: `) + real);
+    return;
+  }
+  await api(`/messages/${encodeURIComponent(real)}/${action}`, { method: "POST" });
   log(green(`  ${action}: `) + real);
 }
 
@@ -1004,14 +1019,35 @@ async function cmdMove(id, folderName) {
   log(green(`  Moved to ${sanitize(target.name)}.`));
 }
 
-async function cmdSearch(query, { json = false, limit = 25 } = {}) {
+async function cmdSearch(query, { json = false, limit = 25, folder = "" } = {}) {
   if (!query) { err("Usage: nova search <query>"); return; }
-  const page = await listPage("inbox", { limit, query });
-  // Search spans folders server-side per folder; also scan a few common ones.
-  if (json) { emitJSON(page.messages); return; }
-  if (!page.messages.length) { log(dim("  No matches.")); return; }
-  log(bold(`  Matches for "${sanitize(query)}"`) + dim(` (${page.messages.length})`) + "\n");
-  for (const m of page.messages) {
+  let results;
+  if (folder) {
+    const f = findFolder(await getFolders(), folder);
+    if (!f) { err(`Folder not found: ${folder}`); return; }
+    results = (await listPage(f.id, { limit, query })).messages;
+  } else {
+    // The API searches within one folder at a time, so fan out across every
+    // real folder and merge by recency. Starred/snoozed are views, not folders.
+    const folders = (await getFolders()).filter((f) => f.type !== "starred" && f.type !== "snoozed");
+    const pages = await Promise.all(
+      folders.map((f) => listPage(f.id, { limit, query }).catch(() => ({ messages: [] })))
+    );
+    const seen = new Set();
+    results = [];
+    for (const p of pages) {
+      for (const m of p.messages) {
+        if (!seen.has(m.id)) { seen.add(m.id); results.push(m); }
+      }
+    }
+    results.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    results = results.slice(0, Math.max(1, limit));
+  }
+  if (json) { emitJSON(results); return; }
+  if (!results.length) { log(dim("  No matches.")); return; }
+  const scope = folder ? ` in ${sanitize(folder)}` : "";
+  log(bold(`  Matches for "${sanitize(query)}"`) + dim(`${scope} (${results.length})`) + "\n");
+  for (const m of results) {
     const sender = padEndW(truncate(displaySender(m), 24), 24);
     log(`  ${cyan(padEndW(String(m.id).slice(0, 8), 8))}  ${sender}  ${dim(padStartW(timeAgo(m.timestamp), 9))}`);
     log(dim("        " + truncate(sanitize(m.subject || "(no subject)"), 64)));
@@ -1039,7 +1075,7 @@ async function cmdStatus({ json = false } = {}) {
   log("");
   log(dim("  Account:  ") + (who || "unknown"));
   log(dim("  Base URL: ") + base);
-  log(dim("  Inbox:    ") + `${total}${hasMore ? "+" : ""} messages, ${inbox ? inbox.unread_count : 0} unread`);
+  log(dim("  Inbox:    ") + `${total}${hasMore ? "+" : ""} message${total === 1 && !hasMore ? "" : "s"}, ${inbox ? inbox.unread_count : 0} unread`);
   log(dim("  Secrets:  ") + green("encrypted at rest") + dim(` (${CONFIG_FILE})`));
   log(dim("  Version:  ") + `CLI ${VERSION}`);
   log(dim("  Repo:     ") + REPO);
@@ -1071,7 +1107,7 @@ async function cmdUpdate() {
     }
     log(yellow(`  A new version is available: v${meta.version} (you have v${VERSION}).`));
     if (meta.changelog) log(dim("  " + meta.changelog));
-    log(dim(`  Update with: npm i -g nova-mail-cli   Â·   or ${meta.url || REPO}`));
+    log(dim(`  Update with: npm i -g nova-mail-cli   ·   or ${meta.url || REPO}`));
   } catch {
     log(dim("  Could not check for updates."));
   }
@@ -1089,7 +1125,7 @@ async function checkForUpdates() {
 }
 
 /* ------------------------------------------------------------------ *
- *  AI bridge (EXPERIMENTAL Â· NOT RECOMMENDED)
+ *  AI bridge (EXPERIMENTAL · NOT RECOMMENDED)
  *  NOVA never runs or trains models. These helpers configure YOUR OWN
  *  model provider API keys and build a master prompt for a BYO agent that
  *  talks to your mailbox through the NOVA AI bridge API.
@@ -1109,7 +1145,7 @@ async function aiSettingsFromServer() {
 function aiMasterPrompt(cfg, aiToken) {
   const base = currentBase();
   return [
-    "# NOVA Mail AI agent â€” master prompt (experimental, NOT RECOMMENDED)",
+    "# NOVA Mail AI agent — master prompt (experimental, NOT RECOMMENDED)",
     "",
     "You are connected to the user's own NOVA Mail inbox via a personal API token.",
     "NOVA itself runs no AI and never reads/trains on mail. You act only on explicit instructions.",
@@ -1184,21 +1220,21 @@ async function aiTest(provider, key) {
  * ------------------------------------------------------------------ */
 async function interactiveShell() {
   requireAuth();
-  bootScreen("Interactive mode Â· press q to quit a menu");
+  bootScreen("Interactive mode · press q to quit a menu");
 
   for (;;) {
     const menu = [
-      "ðŸ“¥  Inbox (list messages)",
-      "âœ‰ï¸   Read a message",
-      "ðŸ“¤  Compose & send",
-      "ðŸ”Ž  Search",
-      "ðŸ“  Folders",
-      "ðŸ¤–  AI agent (experimental, NOT recommended)",
-      "ðŸ“Š  Status",
-      "ðŸšª  Log out",
-      "âŒ  Exit",
+      "📥  Inbox (list messages)",
+      "✉️   Read a message",
+      "📤  Compose & send",
+      "🔎  Search",
+      "📁  Folders",
+      "🤖  AI agent (experimental, NOT recommended)",
+      "📊  Status",
+      "🚪  Log out",
+      "❌  Exit",
     ];
-    const choice = await choose(menu, "NOVA â€” main menu");
+    const choice = await choose(menu, "NOVA — main menu");
     if (choice < 0) continue;
     switch (choice) {
       case 0: await intMailbox(); break;
@@ -1233,10 +1269,10 @@ async function intMailbox() {
   const labels = messages.map((m) => {
     const t = timeAgo(m.timestamp);
     const s = truncate(displaySender(m), 26);
-    const st = (m.flags & 2) === 2 ? "â˜… " : "  ";
-    return `${(m.flags & 1) === 0 ? "â—" : " "} ${st}${padEndW(s, 26)} ${padStartW(t, 8)}  Â·  ${truncate(sanitize(m.subject || m.preview || ""), 30)}`;
+    const st = (m.flags & 2) === 2 ? "★ " : "  ";
+    return `${(m.flags & 1) === 0 ? "●" : " "} ${st}${padEndW(s, 26)} ${padStartW(t, 8)}  ·  ${truncate(sanitize(m.subject || m.preview || ""), 30)}`;
   });
-  const idx = await choose(labels, "Inbox â€” pick a message");
+  const idx = await choose(labels, "Inbox — pick a message");
   if (idx < 0) return;
   await cmdRead(messages[idx].id, { markRead: false });
   await pauseScreen();
@@ -1271,7 +1307,7 @@ async function intSend() {
   log(dim("  Body (leave a blank line to finish):"));
   const body = await readMultiLine();
   if (!body.trim()) {
-    const y = await confirm("  Empty body â€” send anyway?");
+    const y = await confirm("  Empty body — send anyway?");
     if (!y) return;
   }
   try {
@@ -1299,7 +1335,7 @@ async function intAI() {
   const cfg = readConfig();
 
   const items = [
-    "Set up / change an AI provider (OpenAI Â· Anthropic Â· NVIDIA)",
+    "Set up / change an AI provider (OpenAI · Anthropic · NVIDIA)",
     "Test your provider key (calls their API)",
     "Get the master prompt for your agent",
     "Get a curl command to connect your provider",
@@ -1307,13 +1343,13 @@ async function intAI() {
     "Disable the AI bridge",
     "Back",
   ];
-  const choice = await choose(items, "AI agent â€” experimental");
+  const choice = await choose(items, "AI agent — experimental");
   if (choice === 0) {
     const provNames = Object.keys(AI_PROVIDERS).map((k) => AI_PROVIDERS[k].label);
     const pIdx = await choose(provNames, "Choose a provider");
     if (pIdx < 0) return;
     const provider = Object.keys(AI_PROVIDERS)[pIdx];
-    const key = await readLine(`  ${AI_PROVIDERS[provider].label} API key (hidden):  `, { echo: (s) => "â€¢".repeat(s.length) });
+    const key = await readLine(`  ${AI_PROVIDERS[provider].label} API key (hidden):  `, { echo: (s) => "•".repeat(s.length) });
     if (!key.trim()) { log(dim("  Aborted.")); return; }
     saveAi(provider, key.trim());
     log(green("  Saved. ") + dim("Your key is encrypted at rest in ~/.nova/config.json."));
@@ -1321,7 +1357,7 @@ async function intAI() {
     return;
   }
   if (choice === 1) {
-    if (!ai.provider || !ai.key) { err("No provider configured yet â€” choose 'Set up' first."); return; }
+    if (!ai.provider || !ai.key) { err("No provider configured yet — choose 'Set up' first."); return; }
     try {
       await withSpinner(`Testing ${AI_PROVIDERS[ai.provider].label} key`, () => aiTest(ai.provider, ai.key));
       log(green("  Key works."));
@@ -1356,7 +1392,7 @@ async function intAI() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}`, "User-Agent": UA },
         body: JSON.stringify({ auto_approve: now }),
       });
-      log(now === 1 ? yellow("  Auto-approve ON. AI drafts send immediately â€” use with care.") : green("  Auto-approve OFF (manual review)."));
+      log(now === 1 ? yellow("  Auto-approve ON. AI drafts send immediately — use with care.") : green("  Auto-approve OFF (manual review)."));
     } catch (e) {
       err(e.message);
     }
@@ -1415,7 +1451,7 @@ function readAllStdin() {
 }
 
 const HELP = `
-${KEY} ${bold(APP_NAME + " CLI")}  v${VERSION}   Â·   Open source: ${REPO}
+${KEY} ${bold(APP_NAME + " CLI")}  v${VERSION}   ·   Open source: ${REPO}
 
 ${bold("Usage:")}
   nova                       Open the interactive menu
@@ -1428,13 +1464,13 @@ ${bold("Commands:")}
   folders                    List folders + unread counts
   read <message-id>          Show a message (marks it read; --no-mark-read to skip)
   send --to A --subject S --body B [--cc C --bcc D] [--html]
-  search <query>             Search messages
+  search <query>             Search messages (--folder <name> to scope)
   mark <id> read|unread|star|unstar
   move <id> <folder>         Move a message to a folder
   delete <message-id> [--permanent]   Move to trash (or delete for good)
   status                     Show account + connection status
   whoami                     Show your account details
-  ai                         AI agent helpers (EXPERIMENTAL Â· NOT RECOMMENDED)
+  ai                         AI agent helpers (EXPERIMENTAL · NOT RECOMMENDED)
   version                    Show CLI version
   update                     Check for the latest version
   help                       Show this help
@@ -1494,7 +1530,7 @@ async function main() {
 
   if (authCommands.has(cmd)) { try { requireAuth(); } catch { return; } }
 
-  if (!json) bootScreenNonInteractive("Connected Â· type `nova` for the interactive menu");
+  if (!json) bootScreenNonInteractive("Connected · type `nova` for the interactive menu");
 
   try {
     switch (cmd) {
@@ -1538,9 +1574,10 @@ async function main() {
         break;
       }
       case "search": {
-        const q = pos.slice(1).join(" ") || flags["--folder"];
+        const q = pos.slice(1).join(" ");
+        const folder = flags["--folder"] || flags["-f"] || "";
         const limit = parseInt(flags["--limit"] || flags["-n"] || "25", 10) || 25;
-        await spin("Searching", () => cmdSearch(q, { json, limit }));
+        await spin("Searching", () => cmdSearch(q, { json, limit, folder }));
         break;
       }
       case "mark": {

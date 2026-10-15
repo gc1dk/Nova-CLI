@@ -1,6 +1,6 @@
 {
   "name": "nova-mail-cli",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "NOVA Mail CLI — an open-source, interactive command-line companion to NOVA Mail (https://nova-email.com). Read, send, and manage mail, with an optional BYO-agent AI bridge (experimental, not recommended).",
   "license": "MIT",
   "type": "module",
