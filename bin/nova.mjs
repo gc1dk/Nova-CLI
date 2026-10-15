@@ -41,7 +41,7 @@ if (process.platform === "win32" && process.stdout.isTTY) {
  * ------------------------------------------------------------------ */
 const APP_NAME = "NOVA Mail";
 const DEFAULT_BASE = "https://nova-email.com";
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const REPO = "https://github.com/gc1dk/Nova-CLI";
 const CONFIG_DIR = path.join(os.homedir(), ".nova");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -556,15 +556,23 @@ function readLine(prompt, opts = {}) {
   });
 }
 
+// Clear the visible screen AND the scrollback so repeated redraws never leave
+// stale frames behind (the "a new menu keeps appearing when I scroll" bug).
+function clearScreen() {
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+}
+
 // Arrow-key list selector. Returns index, or -1 if cancelled (q/Esc).
 function choose(items, prompt) {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) { resolve(0); return; }
     let idx = 0;
-    const pageSize = Math.max(6, (process.stdout.rows || 24) - 8);
+    // Reserve room for the boot logo (~12 lines) + the nav hint, so a full
+    // frame never overflows the terminal (an overflow scrolls and duplicates).
+    const pageSize = Math.max(4, (process.stdout.rows || 24) - 15);
     const top = () => Math.max(0, Math.min(idx - 2, Math.max(0, items.length - pageSize)));
     const draw = () => {
-      process.stdout.write("\x1b[2J\x1b[H");
+      clearScreen();
       bootScreen(prompt || "Select an option");
       const lo = top();
       const list = items.slice(lo, lo + pageSize);
@@ -584,7 +592,7 @@ function choose(items, prompt) {
     const done = (v) => {
       ks.close();
       disableRaw();
-      process.stdout.write("\x1b[2J\x1b[H");
+      clearScreen();
       resolve(v);
     };
     (async () => {
@@ -631,7 +639,7 @@ function confirm(prompt) {
  *  Boot screen
  * ------------------------------------------------------------------ */
 function bootScreen(subtitle) {
-  process.stdout.write("\x1b[2J\x1b[H");
+  clearScreen();
   log(paint(LOGO, c.cyan));
   log("");
   log(dim("    " + APP_NAME + " command-line") + "   " + dim("v" + VERSION));
@@ -1451,7 +1459,7 @@ function readAllStdin() {
 }
 
 const HELP = `
-${KEY} ${bold(APP_NAME + " CLI")}  v${VERSION}   ·   Open source: ${REPO}
+${KEY} ${bold("Mail CLI")}  v${VERSION}   ·   Open source: ${REPO}
 
 ${bold("Usage:")}
   nova                       Open the interactive menu
