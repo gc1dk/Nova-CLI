@@ -27,9 +27,9 @@ The AI never has your password. It only ever sees what you let it through the br
 nova ai setup
 ```
 
-Choose a provider and paste your API key. Your key is stored **locally** in
-`~/.nova/config.json` and is only used to call the provider from your machine — it is
-**never uploaded to NOVA**.
+Choose a provider and paste your API key. Your key is stored **encrypted at rest**
+(AES-256-GCM) in `~/.nova/config.json` and is only used to call the provider from your machine —
+it is **never uploaded to NOVA**.
 
 ### Verify your key
 

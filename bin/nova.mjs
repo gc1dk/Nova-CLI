@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 /**
- * NOVA Mail CLI — https://github.com/gc1dk/Nova-CLI
+ * NOVA Mail CLI â€” https://github.com/gc1dk/Nova-CLI
  * A command-line companion to NOVA Mail (https://nova-email.com).
  *
- * MIT License · Copyright (c) 2026 Gc1dk (a.k.a. Gc.idk)
+ * MIT License Â· Copyright (c) 2026 Gc1dk (a.k.a. Gc.idk)
  *
  * Zero runtime dependencies. Runs on Node.js 18+.
  *
  * Auth: browser-based. `nova login` opens your browser so you can sign in;
  * NOVA redirects back to a loopback port with a short-lived session token.
- * The token is only ever sent to 127.0.0.1 (your own machine).
+ * The token is only ever sent to 127.0.0.1 (your own machine), and the
+ * handshake is bound to a random `state` value so a stray page or local
+ * process cannot inject a token.
  *
- * Run `nova` with no arguments for the interactive menu, or use one-shot
+ * Secrets (session token, BYO-provider API keys) are encrypted at rest with
+ * AES-256-GCM under a random per-machine key (~/.nova/key, mode 0600). Only
+ * non-sensitive values (base URL, account e-mail, provider name) are stored in
+ * the clear. See the Security section in the README for the threat model.
+ *
+ * Run `nova` with no arguments for the interactive menu, or use the one-shot
  * commands below for scripting.
  */
 
@@ -19,17 +26,27 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+
+// Windows consoles default to a legacy code page (e.g. 437/1252) that turns our
+// UTF-8 box-drawing and punctuation into mojibake. Bump the active console to
+// UTF-8 when we own an interactive terminal. Harmless elsewhere.
+if (process.platform === "win32" && process.stdout.isTTY) {
+  try { spawnSync("chcp", ["65001"], { stdio: "ignore", shell: true }); } catch { /* ignore */ }
+}
 
 /* ------------------------------------------------------------------ *
  *  Constants
  * ------------------------------------------------------------------ */
 const APP_NAME = "NOVA Mail";
 const DEFAULT_BASE = "https://nova-email.com";
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const REPO = "https://github.com/gc1dk/Nova-CLI";
 const CONFIG_DIR = path.join(os.homedir(), ".nova");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const KEY_FILE = path.join(CONFIG_DIR, "key");
+const UA = `nova-cli/${VERSION}`;
 
 // AI providers the CLI knows how to talk to.
 const AI_PROVIDERS = {
@@ -63,6 +80,7 @@ const c = {
   red: "\x1b[31m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
+  blue: "\x1b[34m",
   cyan: "\x1b[36m",
   magenta: "\x1b[35m",
 };
@@ -77,32 +95,33 @@ const red = (s) => paint(s, c.red);
 const green = (s) => paint(s, c.green);
 const yellow = (s) => paint(s, c.yellow);
 const cyan = (s) => paint(s, c.cyan);
+const blue = (s) => paint(s, c.blue);
 const magenta = (s) => paint(s, c.magenta);
 
 const KEY = paint("N", c.cyan) + paint("O", c.magenta) + paint("V", c.green) + paint("A", c.yellow);
 
 const LOGO = `
-    ███╗   ██╗ ██████╗ ██╗   ██╗ █████╗
-    ████╗  ██║██╔═══██╗██║   ██║██╔══██╗
-    ██╔██╗ ██║██║   ██║██║   ██║███████║
-    ██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║
-    ██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║
-    ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝`;
+    â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—
+    â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—
+    â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘
+    â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘
+    â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â• â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•”â• â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘
+    â•šâ•â•  â•šâ•â•â•â• â•šâ•â•â•â•â•â•   â•šâ•â•â•â•  â•šâ•â•  â•šâ•â•`;
 
-const spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const spinners = ["â ‹", "â ™", "â ¹", "â ¸", "â ¼", "â ´", "â ¦", "â §", "â ‡", "â "];
 
 function log(...args) {
   process.stdout.write(args.join(" ") + "\n");
 }
 
 function err(msg) {
-  log(red(bold("✖ ")) + red(msg));
+  log(red(bold("âœ– ")) + red(String(msg)));
   process.exitCode = 1;
 }
 
 // Consistent "not recommended / experimental" banner for anything AI.
 function aiBanner() {
-  log(yellow(bold("  ⚠ EXPERIMENTAL · NOT RECOMMENDED")));
+  log(yellow(bold("  âš  EXPERIMENTAL Â· NOT RECOMMENDED")));
   log(dim("  AI access is a BYO-agent bridge. NOVA itself runs no AI and never") +
        dim("  reads/trains on your mail. Use at your own risk; an AI agent can make") +
        dim("  mistakes and send mail you did not intend."));
@@ -110,53 +129,252 @@ function aiBanner() {
 }
 
 /* ------------------------------------------------------------------ *
- *  Config
+ *  Text safety + width (fixes mojibake, broken columns, and terminal
+ *  escape-sequence injection from untrusted mail content)
  * ------------------------------------------------------------------ */
-function readConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    return {};
-  }
+
+// Strip ANSI/escape sequences and control characters from anything we print
+// that came from the server (subjects, bodies, senders, previewsâ€¦). A hostile
+// message must not be able to move the cursor, recolor the UI, or clear the
+// screen. Keeps newline + tab.
+function sanitize(input) {
+  let s = String(input ?? "");
+  s = s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, ""); // OSC ... BEL/ST
+  s = s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");           // CSI sequences
+  s = s.replace(/\x1b[()][0-9A-Za-z]/g, "");                // charset select
+  s = s.replace(/\x1b[@-_]/g, "");                          // other 2-char seqs
+  s = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");   // leftover controls
+  return s;
 }
-function writeConfig(cfg) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+
+// East-Asian wide + common emoji ranges count as two columns so tables line up.
+function charWidth(cp) {
+  if (cp >= 0x1100 && (
+    cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0x303e) || (cp >= 0x3041 && cp <= 0x33ff) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) ||
+    (cp >= 0xa000 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd)
+  )) return 2;
+  return 1;
+}
+function strWidth(s) {
+  let w = 0;
+  for (const ch of String(s)) w += charWidth(ch.codePointAt(0));
+  return w;
+}
+// Code-point aware truncation (never splits a surrogate pair), by display width.
+function truncate(s, maxWidth) {
+  let out = "";
+  let w = 0;
+  for (const ch of String(s)) {
+    const cw = charWidth(ch.codePointAt(0));
+    if (w + cw > maxWidth) return out + (maxWidth - w >= 1 ? "â€¦" : "");
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+function padEndW(s, width) {
+  const d = width - strWidth(s);
+  return d > 0 ? s + " ".repeat(d) : s;
+}
+function padStartW(s, width) {
+  const d = width - strWidth(s);
+  return d > 0 ? " ".repeat(d) + s : s;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Config â€” encrypted vault for secrets
+ * ------------------------------------------------------------------ */
+
+function ensureDir() {
+  try { fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 }); } catch { /* ignore */ }
+}
+
+// Write atomically with owner-only permissions where the OS supports it.
+function writePrivate(file, data) {
+  ensureDir();
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows: best-effort */ }
+}
+
+// The per-machine wrapping key. 32 random bytes, base64, stored 0600 next to
+// the config. Losing it means secrets are unreadable (re-login to recover).
+function loadOrCreateKey() {
+  try {
+    const raw = fs.readFileSync(KEY_FILE, "utf8").trim();
+    const buf = Buffer.from(raw, "base64");
+    if (buf.length === 32) return buf;
+  } catch { /* create below */ }
+  const buf = randomBytes(32);
+  writePrivate(KEY_FILE, buf.toString("base64") + "\n");
+  return buf;
+}
+
+function seal(obj) {
+  const key = loadOrCreateKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(JSON.stringify(obj), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return "v1:" + iv.toString("base64") + "." + Buffer.concat([ct, tag]).toString("base64");
+}
+
+function unseal(str) {
+  if (typeof str !== "string" || !str.startsWith("v1:")) return null;
+  const parts = str.slice(3).split(".");
+  if (parts.length !== 2) return null;
+  const key = loadOrCreateKey();
+  const iv = Buffer.from(parts[0], "base64");
+  const data = Buffer.from(parts[1], "base64");
+  if (data.length < 16) return null;
+  const tag = data.subarray(data.length - 16);
+  const ct = data.subarray(0, data.length - 16);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return JSON.parse(pt.toString("utf8"));
+}
+
+function readRaw() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); } catch { return {}; }
+}
+function writeRaw(cfg) {
+  writePrivate(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+}
+
+// Public (non-secret) config view.
+function readConfig() {
+  const cfg = readRaw();
+  return { base: cfg.base, email: cfg.email, ai: cfg.ai ? { provider: cfg.ai.provider } : undefined };
+}
+
+// Decrypt secrets, transparently migrating a legacy plaintext config.
+function readSecrets() {
+  const cfg = readRaw();
+  if (typeof cfg.secrets === "string") {
+    try { return unseal(cfg.secrets) || {}; } catch { return {}; }
+  }
+  const legacy = {};
+  if (cfg.token) legacy.token = cfg.token;
+  if (cfg.ai && cfg.ai.key) legacy.aiKey = cfg.ai.key;
+  if (Object.keys(legacy).length) {
+    const clean = { ...cfg };
+    delete clean.token;
+    if (clean.ai) clean.ai = { provider: clean.ai.provider || "" };
+    clean.v = 2;
+    clean.secrets = seal(legacy);
+    writeRaw(clean);
+    return legacy;
+  }
+  return {};
+}
+
+function currentBase() {
+  return normalizeBase(readConfig().base || DEFAULT_BASE);
+}
+function getToken() {
+  return readSecrets().token || "";
+}
+function getAiKey() {
+  return readSecrets().aiKey || "";
+}
+function setBase(base) {
+  const cfg = readRaw();
+  cfg.base = normalizeBase(base);
+  writeRaw(cfg);
 }
 function saveAuth(token, email) {
-  const cfg = readConfig();
-  if (token) cfg.token = token;
-  if (email) cfg.email = email;
+  const cfg = readRaw();
+  const s = readSecrets();
+  if (token) s.token = token;
+  cfg.email = email || cfg.email || "";
   if (!cfg.base) cfg.base = DEFAULT_BASE;
-  writeConfig(cfg);
+  cfg.v = 2;
+  cfg.secrets = seal(s);
+  writeRaw(cfg);
+}
+function saveAi(provider, key) {
+  const cfg = readRaw();
+  const s = readSecrets();
+  cfg.ai = { provider };
+  if (key) s.aiKey = key;
+  cfg.v = 2;
+  cfg.secrets = seal(s);
+  writeRaw(cfg);
 }
 function clearAuth() {
-  const cfg = readConfig();
-  delete cfg.token;
-  delete cfg.email;
-  writeConfig(cfg);
+  const cfg = readRaw();
+  const s = readSecrets();
+  delete s.token;
+  cfg.email = "";
+  cfg.v = 2;
+  cfg.secrets = seal(s);
+  writeRaw(cfg);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Base URL validation (never send credentials over plaintext http)
+ * ------------------------------------------------------------------ */
+function isLoopback(host) {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+function normalizeBase(input) {
+  const raw = String(input || DEFAULT_BASE).trim();
+  let url;
+  try { url = new URL(raw); } catch { throw new Error(`Invalid base URL: ${raw}`); }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("Base URL must start with https:// (or http://localhost).");
+  }
+  if (url.protocol === "http:" && !isLoopback(url.hostname)) {
+    throw new Error("Refusing to send credentials over plain http. Use https:// or a localhost address.");
+  }
+  const sub = url.pathname.replace(/\/+$/, "");
+  return url.origin + sub;
 }
 
 /* ------------------------------------------------------------------ *
  *  Network helpers
  * ------------------------------------------------------------------ */
-async function api(pathname, { method = "GET", body, token } = {}) {
-  const cfg = readConfig();
-  const base = (cfg.base || DEFAULT_BASE).replace(/\/$/, "");
-  const headers = { Accept: "application/json" };
-  if (token || cfg.token) headers.Authorization = `Bearer ${token || cfg.token}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${base}/api/mailbox${pathname}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  let data = null;
+
+// fetch() with a hard timeout so a dead/slow network never hangs the CLI.
+async function fetchT(url, opts = {}, ms = 30000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    data = await res.json();
-  } catch {
-    data = null;
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    if (e && (e.name === "AbortError" || e.code === "ABORT_ERR")) throw new Error(`Request timed out after ${ms / 1000}s.`);
+    throw e;
+  } finally {
+    clearTimeout(t);
   }
+}
+
+async function api(pathname, { method = "GET", body, token, raw = false } = {}) {
+  const base = currentBase();
+  const tok = token || getToken();
+  const headers = { Accept: "application/json", "User-Agent": UA };
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  let res;
+  try {
+    res = await fetchT(`${base}/api/mailbox${pathname}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(`Could not reach ${base} (${e && e.cause ? e.cause.code || e.cause.message : e.message}).`);
+  }
+  if (raw) return res;
+  let data = null;
+  try { data = await res.json(); } catch { data = null; }
   if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
   return data;
 }
@@ -172,10 +390,10 @@ async function withSpinner(label, fn) {
   }, 80);
   try {
     const out = await fn();
-    process.stdout.write(`\r${green("✓")} ${label}\n`);
+    process.stdout.write(`\r${green("âœ“")} ${label}\n`);
     return out;
   } catch (e) {
-    process.stdout.write(`\r${red("✖")} ${label}\n`);
+    process.stdout.write(`\r${red("âœ–")} ${label}\n`);
     throw e;
   } finally {
     clearInterval(timer);
@@ -204,51 +422,43 @@ function disableRaw() {
   }
 }
 
-// ----------------------------------------------------------------------
-// Chunk-safe raw-mode input. Terminals may split an escape sequence
-// across multiple data chunks (and may send SS3/Csi sequences), so we
-// buffer input and parse whole key tokens from the stream rather than
-// reading byte-by-byte from a single chunk.
-// ----------------------------------------------------------------------
-
+// Chunk-safe raw-mode input. Terminals may split an escape sequence across
+// multiple data chunks (and may send SS3/CSI sequences), so we buffer input
+// and parse whole key tokens from the stream rather than reading a single chunk.
 const SS3_MAP = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
 const CSI_MAP = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
 const CSI_TILDE_MAP = { 1: "home", 3: "delete", 4: "end", 5: "pageup", 6: "pagedown", 7: "home", 8: "end" };
 
-// Consume one key token from the front of `buf`.
-// Returns { key, len } or null when more bytes are needed.
 function parseKey(buf) {
   if (!buf) return null;
-  const c = buf[0];
-  if (c === "\u0003") return { key: "ctrl-c", len: 1 };
-  if (c === "\r" || c === "\n") return { key: "enter", len: 1 };
-  if (c === "\u007f" || c === "\b") return { key: "backspace", len: 1 };
-  if (c >= " ") {
+  const ch = buf[0];
+  if (ch === "\u0003") return { key: "ctrl-c", len: 1 };
+  if (ch === "\r" || ch === "\n") return { key: "enter", len: 1 };
+  if (ch === "\u007f" || ch === "\b") return { key: "backspace", len: 1 };
+  if (ch >= " ") {
     const cp = buf.codePointAt(0);
-    const ch = String.fromCodePoint(cp);
-    return { key: ch, len: ch.length };
+    const k = String.fromCodePoint(cp);
+    return { key: k, len: k.length };
   }
-  if (c !== "\u001b") return { key: null, len: 1 }; // swallow stray control bytes
-  if (buf.length === 1) return null; // bare ESC — ambiguous, wait for more
+  if (ch !== "\u001b") return { key: null, len: 1 };
+  if (buf.length === 1) return null;
   if (buf[1] === "O") {
     if (buf.length < 3) return null;
-    const k = SS3_MAP[buf[2]];
-    return { key: k || null, len: 3 };
+    return { key: SS3_MAP[buf[2]] || null, len: 3 };
   }
   if (buf[1] === "[") {
     let j = 2;
-    while (j < buf.length && (buf[j] >= "0" && buf[j] <= "9" || buf[j] === ";" || buf[j] === ":")) j++;
-    if (j >= buf.length) return null; // CSI unterminated — wait for final byte
+    while (j < buf.length && ((buf[j] >= "0" && buf[j] <= "9") || buf[j] === ";" || buf[j] === ":")) j++;
+    if (j >= buf.length) return null;
     const fin = buf[j];
     const n = Number.parseInt(buf.slice(2, j), 10);
     let key = CSI_MAP[fin];
     if (!key && fin === "~") key = CSI_TILDE_MAP[Number.isNaN(n) ? 0 : n];
     return { key: key || null, len: j + 1 };
   }
-  return { key: null, len: 2 }; // ESC + other (Alt+key) — swallow
+  return { key: null, len: 2 };
 }
 
-// A streaming key source that stays subscribed until close().
 function keyStream() {
   let buf = "";
   let queue = [];
@@ -267,8 +477,6 @@ function keyStream() {
       buf = buf.slice(t.len);
       if (t.key !== null) deliver(t.key);
     }
-    // A lone ESC could be a real Esc press or the start of a sequence that
-    // hasn't arrived yet — disambiguate with a short delay.
     if (buf === "\u001b") {
       timer = setTimeout(() => {
         timer = null;
@@ -277,10 +485,7 @@ function keyStream() {
       }, 60);
     }
   };
-  const onData = (d) => {
-    buf += d;
-    flush();
-  };
+  const onData = (d) => { buf += d; flush(); };
   process.stdin.on("data", onData);
   return {
     next() {
@@ -297,14 +502,23 @@ function keyStream() {
   };
 }
 
-// Read a single line. opts.echo masks input (e.g. API keys).
 function readLine(prompt, opts = {}) {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) {
       process.stdout.write(prompt);
+      let data = "";
       process.stdin.resume();
       process.stdin.setEncoding("utf8");
-      process.stdin.once("data", (d) => resolve(String(d).replace(/[\r\n]+$/, "")));
+      const onData = (d) => {
+        data += d;
+        const nl = data.search(/[\r\n]/);
+        if (nl !== -1) {
+          process.stdin.off("data", onData);
+          process.stdin.pause();
+          resolve(data.slice(0, nl));
+        }
+      };
+      process.stdin.on("data", onData);
       return;
     }
     enableRaw();
@@ -314,8 +528,9 @@ function readLine(prompt, opts = {}) {
     const render = () => {
       const s = shown();
       process.stdout.write("\r" + prompt + s + (s.length ? " " : "") + "\x1b[K");
-      const col = (opts.echo ? opts.echo(buf.slice(0, cur)) : buf.slice(0, cur)).length;
-      process.stdout.write("\x1b[" + Math.max(0, s.length - col + 1) + "D");
+      const before = opts.echo ? opts.echo(buf.slice(0, cur)) : buf.slice(0, cur);
+      const back = Math.max(0, strWidth(s) - strWidth(before));
+      if (back > 0) process.stdout.write(`\x1b[${back}D`);
     };
     render();
     const ks = keyStream();
@@ -323,28 +538,16 @@ function readLine(prompt, opts = {}) {
       for (;;) {
         const k = await ks.next();
         if (k === "ctrl-c") { ks.close(); disableRaw(); process.stdout.write("\n"); process.exit(1); }
-        if (k === "enter") {
-          ks.close();
-          disableRaw();
-          process.stdout.write("\n");
-          resolve(buf);
-          return;
-        }
-        if (k === "backspace") {
-          if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur--; render(); }
-          continue;
-        }
-        if (k === "delete") {
-          if (cur < buf.length) { buf = buf.slice(0, cur) + buf.slice(cur + 1); render(); }
-          continue;
-        }
+        if (k === "enter") { ks.close(); disableRaw(); process.stdout.write("\n"); resolve(buf); return; }
+        if (k === "backspace") { if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur--; render(); } continue; }
+        if (k === "delete") { if (cur < buf.length) { buf = buf.slice(0, cur) + buf.slice(cur + 1); render(); } continue; }
         if (k === "left") { if (cur > 0) { cur--; render(); } continue; }
         if (k === "right") { if (cur < buf.length) { cur++; render(); } continue; }
         if (k === "home") { cur = 0; render(); continue; }
         if (k === "end") { cur = buf.length; render(); continue; }
-        if (typeof k === "string" && k.length === 1 && k >= " ") {
+        if (typeof k === "string" && [...k].length === 1 && k >= " ") {
           buf = buf.slice(0, cur) + k + buf.slice(cur);
-          cur++;
+          cur += k.length;
           render();
           continue;
         }
@@ -353,26 +556,10 @@ function readLine(prompt, opts = {}) {
   });
 }
 
-function readKey() {
-  return new Promise((resolve) => {
-    if (!process.stdin.isTTY) { resolve(""); return; }
-    enableRaw();
-    const ks = keyStream();
-    ks.next().then((k) => {
-      ks.close();
-      disableRaw();
-      resolve(typeof k === "string" ? k : "");
-    });
-  });
-}
-
 // Arrow-key list selector. Returns index, or -1 if cancelled (q/Esc).
 function choose(items, prompt) {
   return new Promise((resolve) => {
-    if (!process.stdin.isTTY) {
-      resolve(0);
-      return;
-    }
+    if (!process.stdin.isTTY) { resolve(0); return; }
     let idx = 0;
     const pageSize = Math.max(6, (process.stdout.rows || 24) - 8);
     const top = () => Math.max(0, Math.min(idx - 2, Math.max(0, items.length - pageSize)));
@@ -382,12 +569,13 @@ function choose(items, prompt) {
       const lo = top();
       const list = items.slice(lo, lo + pageSize);
       list.forEach((item, i) => {
-        if (lo + i === idx) log("  " + paint("› ", c.cyan) + "  " + paint(item, c.bold));
-        else log("    " + item);
+        const label = sanitize(item);
+        if (lo + i === idx) log("  " + paint("â€º ", c.cyan) + "  " + paint(label, c.bold));
+        else log("    " + label);
       });
       log("");
-      const nav = "  ↑/↓ navigate · Enter select · q/Esc back · Ctrl-C quit";
-      const paged = items.length > pageSize ? " · PgUp/PgDn page · 1-9 quick pick" : "";
+      const nav = "  â†‘/â†“ navigate Â· Enter select Â· q/Esc back Â· Ctrl-C quit";
+      const paged = items.length > pageSize ? " Â· PgUp/PgDn page Â· 1-9 quick pick" : "";
       log(dim(nav + paged));
     };
     enableRaw();
@@ -435,6 +623,10 @@ function pauseScreen(msg = "Press any key to continue") {
   });
 }
 
+function confirm(prompt) {
+  return choose(["Yes", "No"], prompt).then((a) => a === 0);
+}
+
 /* ------------------------------------------------------------------ *
  *  Boot screen
  * ------------------------------------------------------------------ */
@@ -462,23 +654,20 @@ function bootScreenNonInteractive(subtitle) {
  * ------------------------------------------------------------------ */
 function openBrowser(url) {
   const escaped = JSON.stringify(url);
-  const cmds =
-    process.platform === "darwin" ? [`open ${escaped}`]
-    : process.platform === "win32" ? [`start "" ${escaped}`]
-    : [`xdg-open ${escaped}`];
-  for (const cmd of cmds) {
-    try {
-      spawn(cmd, { shell: true, stdio: "ignore", detached: true }).unref();
-      return true;
-    } catch {
-      /* try next */
-    }
+  let cmd;
+  if (process.platform === "darwin") cmd = `open ${escaped}`;
+  else if (process.platform === "win32") cmd = `start "" ${escaped}`;
+  else cmd = `xdg-open ${escaped}`;
+  try {
+    spawn(cmd, { shell: true, stdio: "ignore", detached: true }).unref();
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 /* ------------------------------------------------------------------ *
- *  Login (browser-based auto-auth)
+ *  Login (browser-based auto-auth, CSRF-state protected)
  * ------------------------------------------------------------------ */
 function randomPort() {
   return 42000 + Math.floor(Math.random() * 20000);
@@ -487,157 +676,384 @@ function randomPort() {
 function login() {
   return new Promise((resolve) => {
     const port = randomPort();
+    const state = randomBytes(16).toString("hex"); // binds the callback to us
+    let settled = false;
+    let timer = null;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { server.close(); } catch { /* ignore */ }
+      resolve(val);
+    };
+    const page = (title, color, note) =>
+      "<!doctype html><html><body style='font-family:system-ui;background:#0f0d2e;color:#fff;display:grid;place-items:center;height:100vh;margin:0'>" +
+      `<div style='text-align:center'><div style='font-size:48px'>${title}</div>` +
+      `<h1 style='color:${color}'>${note}</h1>` +
+      "<p style='color:#a1a1aa'>You can close this tab and return to your terminal.</p></div></body></html>";
+
     const server = http.createServer((req, res) => {
+      if (req.method !== "GET") { res.writeHead(405); res.end("Method not allowed"); return; }
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
-      if (url.pathname === "/complete") {
-        const token = url.searchParams.get("token");
-        const email = url.searchParams.get("email") || "";
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        if (token) {
-          res.end(
-            "<!doctype html><html><body style='font-family:system-ui;background:#0f0d2e;color:#fff;display:grid;place-items:center;height:100vh;margin:0'>" +
-            "<div style='text-align:center'><div style='font-size:48px'>✅</div><h1>NOVA is connected</h1>" +
-            "<p style='color:#a1a1aa'>Close this tab and return to your terminal.</p></div></body></html>"
-          );
-          saveAuth(token, email || "");
-          server.close();
-          resolve(true);
-        } else {
-          res.end("<h1 style='font-family:system-ui;background:#0f0d2e;color:#f87171;display:grid;height:100vh;place-items:center;margin:0;text-align:center'>Sign-in failed. Please try again.<br/><small>Close this tab.</small></h1>");
-          server.close();
-          resolve(false);
-        }
+      if (url.pathname !== "/complete") { res.writeHead(404); res.end("Not found"); return; }
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      const token = url.searchParams.get("token");
+      const email = url.searchParams.get("email") || "";
+      const gotState = url.searchParams.get("state") || "";
+      if (token && gotState === state) {
+        res.writeHead(200);
+        res.end(page("âœ…", "#34d399", "NOVA is connected"));
+        saveAuth(token, email);
+        finish(true);
       } else {
-        res.writeHead(404);
-        res.end("Not found");
+        res.writeHead(200);
+        res.end(page("âš ï¸", "#f87171", "Sign-in failed â€” please try again"));
+        finish(false);
       }
     });
-    server.listen(port, "127.0.0.1", async () => {
-      const url = `${readConfig().base || DEFAULT_BASE}/login?cli=1&port=${port}`;
-      log(dim("  Waiting for your browser sign-in…"));
-      const opened = openBrowser(url);
-      if (!opened) {
+    server.on("error", () => finish(false));
+    timer = setTimeout(() => {
+      log(yellow("  Timed out waiting for the browser. ")) ;
+      finish(false);
+    }, 5 * 60 * 1000);
+
+    server.listen(port, "127.0.0.1", () => {
+      let base;
+      try { base = currentBase(); } catch (e) { err(e.message); finish(false); return; }
+      const url = `${base}/login?cli=1&port=${port}&state=${state}`;
+      log(dim("  Waiting for your browser sign-inâ€¦"));
+      const ok = openBrowser(url);
+      if (!ok) {
         log(yellow("  Could not open a browser automatically."));
         log(dim("  Open this URL in your browser, sign in, and the CLI will continue:"));
         log(cyan("  " + url));
       }
     });
-    server.on("error", () => resolve(false));
   });
 }
 
 /* ------------------------------------------------------------------ *
- *  Auth + status helpers
+ *  Auth + misc helpers
  * ------------------------------------------------------------------ */
 function requireAuth() {
-  const cfg = readConfig();
-  if (!cfg.token) {
+  if (!getToken()) {
     err("Not logged in. Run `nova login` first.");
     throw new Error("not-authenticated");
   }
-  return cfg;
 }
 
 function timeAgo(ts) {
   const sec = Math.floor(Date.now() / 1000 - ts);
+  if (sec < 0) return "just now";
   if (sec < 60) return `${Math.max(1, sec)}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
+function decodeEntities(s) {
+  return String(s).replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, ent) => {
+    if (ent[0] === "#") {
+      const cp = ent[1] === "x" || ent[1] === "X" ? parseInt(ent.slice(2), 16) : parseInt(ent.slice(1), 10);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
+    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", copy: "Â©", reg: "Â®", trade: "â„¢", hellip: "â€¦", mdash: "â€”", ndash: "â€“", rsquo: "â€™", lsquo: "â€˜", rdquo: "â€", ldquo: "â€œ" };
+    return Object.prototype.hasOwnProperty.call(named, ent) ? named[ent] : m;
+  });
+}
+
+// Best-effort HTML â†’ readable plain text for terminal display.
+function htmlToText(html) {
+  let s = String(html || "");
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<script[\s\S]*?<\/script>/gi, "");
+  s = s.replace(/<!--[\s\S]*?-->/g, "");
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<\/(p|div|tr|h[1-6]|li|table|blockquote|pre)>/gi, "\n");
+  s = s.replace(/<li[^>]*>/gi, "  â€¢ ");
+  s = s.replace(/<[^>]+>/g, "");
+  s = decodeEntities(s);
+  return s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function emitJSON(obj) {
+  log(JSON.stringify(obj, null, 2));
+}
+
+// "Name <addr>" → prefer the display name; drop a redundant duplicate address.
+function fmtAddr(input) {
+  const v = String(input || "").trim();
+  const m = v.match(/^(.*?)\s*<([^>]+)>\s*$/);
+  if (m) {
+    const name = m[1].replace(/^"|"$/g, "").trim();
+    const addr = m[2].trim();
+    return name && name.toLowerCase() !== addr.toLowerCase() ? `${name} <${addr}>` : addr;
+  }
+  return v;
+}
+function displaySender(m) {
+  return sanitize(m.sender_name ? m.sender_name : fmtAddr(m.sender || ""));
+}
+function fmtRecipients(r) {
+  if (!r) return "";
+  if (Array.isArray(r)) return r.map((x) => (typeof x === "string" ? x : (x && x.address) || "")).filter(Boolean).join(", ");
+  const s = String(r);
+  if (s.trim().startsWith("[")) {
+    try {
+      const a = JSON.parse(s);
+      if (Array.isArray(a)) return a.map((x) => (typeof x === "string" ? x : (x && x.address) || "")).filter(Boolean).join(", ");
+    } catch { /* not JSON */ }
+  }
+  return s;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Folder + message helpers
+ * ------------------------------------------------------------------ */
+
+// GET /folders â†’ array of {id,name,type,unread_count}
+async function getFolders() {
+  const data = await api("/folders");
+  return Array.isArray(data) ? data : (data && data.folders) || [];
+}
+
+function findFolder(folders, name) {
+  if (!name) return folders.find((f) => f.type === "inbox") || folders[0];
+  const n = name.toLowerCase();
+  return folders.find((f) => f.type === n) ||
+         folders.find((f) => f.name.toLowerCase() === n) ||
+         folders.find((f) => f.id === name);
+}
+
+// One page of messages. Returns { messages, has_more, next_cursor }.
+async function listPage(folder, { limit = 50, query = "" } = {}) {
+  const qs = new URLSearchParams();
+  qs.set("folder", folder);
+  qs.set("limit", String(Math.min(100, Math.max(1, limit))));
+  if (query) qs.set("q", query);
+  const data = await api("/messages?" + qs.toString());
+  if (Array.isArray(data)) return { messages: data, has_more: false, next_cursor: null };
+  return {
+    messages: (data && data.messages) || [],
+    has_more: !!(data && data.has_more),
+    next_cursor: (data && data.next_cursor) || null,
+  };
+}
+
+// Follow the cursor to the end (bounded so a huge inbox cannot run away).
+async function listAll(folder, { query = "", cap = 1000 } = {}) {
+  const out = [];
+  let cursor = null;
+  for (;;) {
+    const qs = new URLSearchParams();
+    qs.set("folder", folder);
+    qs.set("limit", "100");
+    if (query) qs.set("q", query);
+    if (cursor) { qs.set("before", cursor.before); qs.set("before_id", cursor.before_id || ""); }
+    const data = await api("/messages?" + qs.toString());
+    const page = Array.isArray(data) ? data : (data && data.messages) || [];
+    out.push(...page);
+    const hasMore = !Array.isArray(data) && data && data.has_more && data.next_cursor;
+    if (!hasMore || page.length === 0 || out.length >= cap) break;
+    cursor = data.next_cursor;
+  }
+  return out;
+}
+
+// Accept a full uuid or the short id shown in listings.
+async function resolveId(input) {
+  const v = String(input || "").trim();
+  if (!v) throw new Error("Missing message id.");
+  if (v.length >= 32) return v;
+  const folders = await getFolders();
+  for (const f of folders) {
+    if (f.type === "starred" || f.type === "snoozed") continue;
+    try {
+      const { messages } = await listPage(f.id, { limit: 100 });
+      const hit = messages.find((m) => String(m.id).startsWith(v));
+      if (hit) return hit.id;
+    } catch { /* keep looking */ }
+  }
+  return v; // let the server answer (404)
+}
+
 /* ------------------------------------------------------------------ *
  *  One-shot commands
  * ------------------------------------------------------------------ */
-async function cmdMailbox(folderName) {
-  const folders = await api("/folders");
-  const current = folders.find((f) => (folderName ? f.name.toLowerCase() === folderName.toLowerCase() : f.type === "inbox"));
+async function cmdMailbox(folderName, { all = false, limit = 25, json = false } = {}) {
+  const folders = await getFolders();
+  const current = findFolder(folders, folderName);
   if (!current) {
-    const names = folders.map((f) => f.name).join(", ");
-    err(`Folder not found. Available: ${names}`);
+    err(`Folder not found. Available: ${folders.map((f) => f.name).join(", ")}`);
     return;
   }
-  const messages = await api(`/messages?folder_id=${encodeURIComponent(current.id)}`);
-  if (!messages || messages.length === 0) {
-    log(dim("  No messages."));
-    return;
+  let messages, hasMore;
+  if (all) {
+    messages = await listAll(current.id);
+    hasMore = false;
+  } else {
+    const page = await listPage(current.id, { limit });
+    messages = page.messages;
+    hasMore = page.has_more;
   }
-  log(bold(`  ${current.name}  `) + dim(`(${messages.length})`) + "\n");
+  if (json) { emitJSON({ folder: current.name, messages }); return; }
+  if (messages.length === 0) { log(dim("  No messages.")); return; }
+
+  log(bold(`  ${sanitize(current.name)}  `) + dim(`(${messages.length}${hasMore ? "+" : ""})`) + "\n");
   for (const m of messages) {
-    const unread = m.flags === 0 ? bold("● ") : "  ";
-    const sender = String(m.sender || "").padEnd(28, " ").slice(0, 28);
-    const preview = String(m.preview || "").slice(0, 42);
-    log(`  ${unread}${cyan(m.id.slice(0, 8).padEnd(9))} ${sender} ${dim(timeAgo(m.timestamp)).padStart(8)}`.slice(0, 58));
-    log(dim(`  ${preview}`));
-    log("");
+    const unread = (m.flags & 1) === 0 ? bold("â—") : " ";
+    const star = (m.flags & 2) === 2 ? yellow("â˜…") : " ";
+    const id = padEndW(String(m.id).slice(0, 8), 8);
+    const sender = padEndW(truncate(displaySender(m) || "(unknown)", 24), 24);
+    const when = padStartW(timeAgo(m.timestamp), 9);
+    log(`  ${unread}${star} ${cyan(id)}  ${sender}  ${dim(when)}`);
+    log(dim("        " + truncate(sanitize(m.subject || "(no subject)"), 64)));
   }
+  log("");
+  if (hasMore) log(dim(`  ${limit} shown â€” more available. Use --all for the rest, or --limit N.`));
   log(dim("  Run `nova read <id>` to open a message."));
 }
 
-async function listMessagesForPicker(folderName) {
-  const folders = await api("/folders");
-  const current = folders.find((f) => (folderName ? f.name.toLowerCase() === folderName.toLowerCase() : f.type === "inbox"));
-  if (!current) return [];
-  const data = await api(`/messages?folder_id=${encodeURIComponent(current.id)}`);
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.messages)) return data.messages;
-  return [];
-}
-
-async function cmdRead(id) {
-  const detail = await api(`/messages/${id}`);
+async function cmdFolders({ json = false } = {}) {
+  const folders = await getFolders();
+  if (json) { emitJSON(folders); return; }
   log("");
-  log(bold(`  ${detail.subject || "(no subject)"}`));
-  log("");
-  log(dim(`  From:  `) + (detail.sender || ""));
-  log(dim(`  To:    `) + (detail.recipients ? (typeof detail.recipients === "string" ? detail.recipients : detail.recipients.join(", ")) : ""));
-  log(dim(`  Sent:  `) + new Date((detail.timestamp || 0) * 1000).toLocaleString());
-  log("");
-  log("  " + "─".repeat(58));
-  log("");
-  log(detail.body || dim("(no body)"));
+  for (const f of folders) {
+    const unread = f.unread_count ? yellow(` (${f.unread_count})`) : "";
+    log(`  ${padEndW(truncate(sanitize(f.name), 20), 20)} ${dim(f.type)}${unread}`);
+  }
   log("");
 }
 
-async function sendMessage(to, subject, body) {
+async function cmdRead(id, { json = false, markRead = true } = {}) {
+  const real = await resolveId(id);
+  const d = await api(`/messages/${encodeURIComponent(real)}`);
+  if (json) { emitJSON(d); return; }
+  const subject = sanitize(d.subject || "(no subject)");
+  const to = fmtRecipients(d.recipients);
+  log("");
+  log(bold("  " + subject));
+  log("");
+  log(dim("  From:  ") + sanitize(d.sender || ""));
+  log(dim("  To:    ") + sanitize(to));
+  log(dim("  Sent:  ") + new Date((d.timestamp || 0) * 1000).toLocaleString());
+  if (d.is_encrypted) log(dim("  ") + green("ðŸ”’ encrypted at rest"));
+  log("");
+  log("  " + "â”€".repeat(60));
+  log("");
+  const raw = d.body || "";
+  const text = d.is_html ? htmlToText(raw) : String(raw);
+  log(text ? sanitize(text) : dim("(no body)"));
+  log("");
+  if (markRead && (d.flags & 1) === 0) {
+    try { await api(`/messages/${encodeURIComponent(real)}/read`, { method: "POST" }); } catch { /* non-fatal */ }
+  }
+}
+
+async function sendMessage(to, subject, body, { cc, bcc, html = false } = {}) {
   const payload = {
-    to: to.split(",").map((s) => s.trim()).filter(Boolean),
+    to: String(to).split(",").map((s) => s.trim()).filter(Boolean),
     subject: subject || "(no subject)",
     body: body || "",
-    is_html: false,
+    is_html: !!html,
   };
-  const res = await api("/send", { method: "POST", body: payload });
-  return res;
+  if (cc) payload.cc = String(cc).split(",").map((s) => s.trim()).filter(Boolean);
+  if (bcc) payload.bcc = String(bcc).split(",").map((s) => s.trim()).filter(Boolean);
+  return api("/send", { method: "POST", body: payload });
 }
 
-async function cmdSend(to, subject, body) {
+async function cmdSend(to, subject, body, opts = {}) {
   if (!to) {
-    err("Missing recipient. Usage: nova send --to you@example.com --subject \"Hi\" --body \"msg\"");
+    err('Missing recipient. Usage: nova send --to you@example.com --subject "Hi" --body "msg"');
     return;
   }
-  const res = await sendMessage(to, subject, body);
-  log(green("  Sent.") + (res.id ? dim(` (id ${res.id})`) : ""));
+  const res = await sendMessage(to, subject, body, opts);
+  log(green("  Sent.") + (res && res.id ? dim(` (id ${res.id})`) : ""));
+  if (res && res.failed && res.failed.length) log(yellow("  Not delivered: ") + sanitize(res.failed.join(", ")));
 }
 
-async function cmdDelete(id) {
-  const detail = await api(`/messages/${id}`);
-  const subject = detail.subject || "(no subject)";
-  await api(`/messages/${id}`, { method: "POST", body: { action: "trash" } });
-  log(green(`  Deleted: `) + subject);
+async function cmdDelete(id, { permanent = false } = {}) {
+  const real = await resolveId(id);
+  const d = await api(`/messages/${encodeURIComponent(real)}`);
+  const subject = sanitize(d.subject || "(no subject)");
+  if (permanent) {
+    await api(`/messages/${encodeURIComponent(real)}/permanent`, { method: "POST" });
+    log(green("  Permanently deleted: ") + subject);
+  } else {
+    await api(`/messages/${encodeURIComponent(real)}`, { method: "POST", body: { action: "trash" } });
+    log(green("  Moved to trash: ") + subject);
+  }
 }
 
-async function cmdStatus() {
-  const cfg = readConfig();
-  const folders = await api("/folders");
-  const inbox = folders.find((f) => f.type === "inbox");
-  const total = inbox ? (await api(`/messages?folder_id=${inbox.id}`)).length : 0;
-  const unread = inbox ? inbox.unread_count : 0;
+async function cmdMark(id, action) {
+  const real = await resolveId(id);
+  const map = { read: "read", unread: "unread", star: "star", unstar: "star" };
+  const end = map[action];
+  if (!end) { err("Usage: nova mark <id> read|unread|star|unstar"); return; }
+  await api(`/messages/${encodeURIComponent(real)}/${end}`, { method: "POST" });
+  log(green(`  ${action}: `) + real);
+}
+
+async function cmdMove(id, folderName) {
+  if (!folderName) { err("Usage: nova move <id> <folder>"); return; }
+  const real = await resolveId(id);
+  const folders = await getFolders();
+  const target = findFolder(folders, folderName);
+  if (!target) { err(`Folder not found: ${folderName}`); return; }
+  await api(`/messages/${encodeURIComponent(real)}/move`, { method: "POST", body: { target_folder_id: target.id } });
+  log(green(`  Moved to ${sanitize(target.name)}.`));
+}
+
+async function cmdSearch(query, { json = false, limit = 25 } = {}) {
+  if (!query) { err("Usage: nova search <query>"); return; }
+  const page = await listPage("inbox", { limit, query });
+  // Search spans folders server-side per folder; also scan a few common ones.
+  if (json) { emitJSON(page.messages); return; }
+  if (!page.messages.length) { log(dim("  No matches.")); return; }
+  log(bold(`  Matches for "${sanitize(query)}"`) + dim(` (${page.messages.length})`) + "\n");
+  for (const m of page.messages) {
+    const sender = padEndW(truncate(displaySender(m), 24), 24);
+    log(`  ${cyan(padEndW(String(m.id).slice(0, 8), 8))}  ${sender}  ${dim(padStartW(timeAgo(m.timestamp), 9))}`);
+    log(dim("        " + truncate(sanitize(m.subject || "(no subject)"), 64)));
+  }
   log("");
-  log(dim("  Account:  ") + (cfg.email || "unknown"));
-  log(dim("  Base URL: ") + (cfg.base || DEFAULT_BASE));
-  log(dim("  Inbox:    ") + `${total} messages, ${unread} unread`);
+}
+
+async function cmdStatus({ json = false } = {}) {
+  const base = readConfig().base || DEFAULT_BASE;
+  const folders = await getFolders();
+  const inbox = folders.find((f) => f.type === "inbox");
+  let total = 0;
+  let hasMore = false;
+  if (inbox) {
+    const page = await listPage(inbox.id, { limit: 100 });
+    total = page.messages.length;
+    hasMore = page.has_more;
+  }
+  let who = readConfig().email || "";
+  if (!who) { try { who = (await api("/user")).email || ""; } catch { /* ignore */ } }
+  if (json) {
+    emitJSON({ account: who, base, inbox: { shown: total, has_more: hasMore, unread: inbox ? inbox.unread_count : 0 }, version: VERSION });
+    return;
+  }
+  log("");
+  log(dim("  Account:  ") + (who || "unknown"));
+  log(dim("  Base URL: ") + base);
+  log(dim("  Inbox:    ") + `${total}${hasMore ? "+" : ""} messages, ${inbox ? inbox.unread_count : 0} unread`);
+  log(dim("  Secrets:  ") + green("encrypted at rest") + dim(` (${CONFIG_FILE})`));
   log(dim("  Version:  ") + `CLI ${VERSION}`);
   log(dim("  Repo:     ") + REPO);
+  log("");
+}
+
+async function cmdWhoami({ json = false } = {}) {
+  const u = await api("/user");
+  if (json) { emitJSON(u); return; }
+  log("");
+  log(dim("  Email:   ") + sanitize(u.email || ""));
+  log(dim("  Name:    ") + sanitize(u.display_name || ""));
+  log(dim("  Type:    ") + (u.account_type || ""));
+  log(dim("  Key:     ") + (u.key_scheme === "client" ? green("client-side (E2EE)") : "server-side"));
   log("");
 }
 
@@ -647,14 +1063,15 @@ function cmdVersion() {
 
 async function cmdUpdate() {
   try {
-    const meta = await (await fetch(`${readConfig().base || DEFAULT_BASE}/api/cli/version`)).json();
+    const meta = await (await fetchT(`${currentBase()}/api/cli/version`, {}, 8000)).json();
     if (!meta.version) throw new Error("bad manifest");
     if (meta.version === VERSION) {
       log(green("  You're on the latest version.") + dim(" (v" + VERSION + ")"));
       return;
     }
     log(yellow(`  A new version is available: v${meta.version} (you have v${VERSION}).`));
-    log(dim(`  Grab it from ${REPO} or ${readConfig().base || DEFAULT_BASE}/cli`));
+    if (meta.changelog) log(dim("  " + meta.changelog));
+    log(dim(`  Update with: npm i -g nova-mail-cli   Â·   or ${meta.url || REPO}`));
   } catch {
     log(dim("  Could not check for updates."));
   }
@@ -662,7 +1079,7 @@ async function cmdUpdate() {
 
 async function checkForUpdates() {
   try {
-    const meta = await (await fetch(`${readConfig().base || DEFAULT_BASE}/api/cli/version`)).json();
+    const meta = await (await fetchT(`${currentBase()}/api/cli/version`, {}, 8000)).json();
     if (meta.version && meta.version !== VERSION) {
       log(dim("  " + `Update available: v${meta.version}. Run \`nova update\`.`));
     }
@@ -672,30 +1089,27 @@ async function checkForUpdates() {
 }
 
 /* ------------------------------------------------------------------ *
- *  AI bridge (EXPERIMENTAL · NOT RECOMMENDED)
+ *  AI bridge (EXPERIMENTAL Â· NOT RECOMMENDED)
  *  NOVA never runs or trains models. These helpers configure YOUR OWN
  *  model provider API keys and build a master prompt for a BYO agent that
  *  talks to your mailbox through the NOVA AI bridge API.
  * ------------------------------------------------------------------ */
 function getAI() {
-  const cfg = readConfig();
-  return cfg.ai || { provider: "", key: "" };
+  return { provider: (readConfig().ai && readConfig().ai.provider) || "", key: getAiKey() };
 }
 
 async function aiSettingsFromServer() {
-  const cfg = readConfig();
-  const base = (cfg.base || DEFAULT_BASE).replace(/\/$/, "");
-  const res = await fetch(`${base}/api/ai/settings`, {
-    headers: { Authorization: `Bearer ${cfg.token}` },
+  const res = await fetchT(`${currentBase()}/api/ai/settings`, {
+    headers: { Authorization: `Bearer ${getToken()}`, "User-Agent": UA },
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Could not read AI settings");
   return res.json();
 }
 
 function aiMasterPrompt(cfg, aiToken) {
-  const base = (cfg.base || DEFAULT_BASE).replace(/\/$/, "");
+  const base = currentBase();
   return [
-    "# NOVA Mail AI agent — master prompt (experimental, NOT RECOMMENDED)",
+    "# NOVA Mail AI agent â€” master prompt (experimental, NOT RECOMMENDED)",
     "",
     "You are connected to the user's own NOVA Mail inbox via a personal API token.",
     "NOVA itself runs no AI and never reads/trains on mail. You act only on explicit instructions.",
@@ -723,21 +1137,21 @@ function aiMasterPrompt(cfg, aiToken) {
 
 function aiCurlCommand(cfg, provider, key) {
   const p = AI_PROVIDERS[provider];
-  const base = (cfg.base || DEFAULT_BASE).replace(/\/$/, "");
+  const base = currentBase();
   const authHeader = p.auth.replace("<KEY>", key);
   return [
     "curl -sS " + p.base + "/chat/completions \\",
-    `  -H "Content-Type: application/json" \\`,
+    '  -H "Content-Type: application/json" \\',
     `  -H "${authHeader}" \\`,
-    '  -d \'{',
+    "  -d '{",
     '    "model": "' + p.model + '",',
     '    "max_tokens": 1000,',
     '    "messages": [{',
     '      "role": "user",',
     '      "content": "You are a helpful email assistant bridged to NOVA Mail. " +',
     '        "Endpoint: ' + base + '/api/ai. Auth: x-ai-token header. Read mail, draft replies, submit for approval."',
-    '    }]',
-    '  }\'',
+    "    }]",
+    "  }'",
   ].join("\n");
 }
 
@@ -752,91 +1166,54 @@ async function aiTest(provider, key) {
   if (provider === "anthropic") {
     headers["x-api-key"] = key;
     headers["anthropic-version"] = "2023-06-01";
-  } else if (provider === "openai") {
-    headers["Authorization"] = `Bearer ${key}`;
-  } else if (provider === "nvidia") {
+  } else {
     headers["Authorization"] = `Bearer ${key}`;
   }
-  const res = await fetch(`${p.base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) });
+  const res = await fetchT(`${p.base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); msg = (j.error && (j.error.message || j.error)) || msg; } catch {}
+    try { const j = await res.json(); msg = (j.error && (j.error.message || j.error)) || msg; } catch { /* ignore */ }
     throw new Error(`${p.label} rejected the key/request: ${msg}`);
   }
   const j = await res.json();
   return (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "OK";
 }
 
-async function aiGenerateReply(cfg, provider, key, context) {
-  const p = AI_PROVIDERS[provider];
-  const system = [
-    "You draft concise email replies for the user. You are NOT sending anything —",
-    "the user will review and approve before anything leaves. Never include fabricated",
-    "details. Use a warm, professional tone.",
-  ].join(" ");
-  const body = {
-    model: p.model,
-    max_tokens: 500,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: context },
-    ],
-  };
-  const headers = { "Content-Type": "application/json" };
-  if (provider === "anthropic") headers["x-api-key"] = key;
-  else headers["Authorization"] = `Bearer ${key}`;
-  const res = await fetch(`${p.base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); msg = (j.error && (j.error.message || j.error)) || msg; } catch {}
-    throw new Error(`${p.label} error: ${msg}`);
-  }
-  const j = await res.json();
-  return (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
-}
-
 /* ------------------------------------------------------------------ *
  *  Interactive shell
  * ------------------------------------------------------------------ */
 async function interactiveShell() {
-  const cfg = requireAuth();
-  bootScreen("Interactive mode · press q to quit a menu");
+  requireAuth();
+  bootScreen("Interactive mode Â· press q to quit a menu");
 
   for (;;) {
     const menu = [
-      "📥  Inbox (list messages)",
-      "✉️   Read a message",
-      "📤  Compose & send",
-      "🤖  AI agent (experimental, NOT recommended)",
-      "📊  Status",
-      "🚪  Log out",
-      "❌  Exit",
+      "ðŸ“¥  Inbox (list messages)",
+      "âœ‰ï¸   Read a message",
+      "ðŸ“¤  Compose & send",
+      "ðŸ”Ž  Search",
+      "ðŸ“  Folders",
+      "ðŸ¤–  AI agent (experimental, NOT recommended)",
+      "ðŸ“Š  Status",
+      "ðŸšª  Log out",
+      "âŒ  Exit",
     ];
-    const choice = await choose(menu, "NOVA — main menu");
+    const choice = await choose(menu, "NOVA â€” main menu");
     if (choice < 0) continue;
     switch (choice) {
-      case 0:
-        await intMailbox();
-        break;
-      case 1:
-        await intRead();
-        break;
-      case 2:
-        await intSend();
-        break;
-      case 3:
-        await intAI();
-        break;
-      case 4:
-        await withSpinner("Checking status", cmdStatus);
-        await pauseScreen();
-        break;
-      case 5:
+      case 0: await intMailbox(); break;
+      case 1: await intRead(); break;
+      case 2: await intSend(); break;
+      case 3: await intSearch(); break;
+      case 4: await withSpinner("Loading folders", () => cmdFolders()); await pauseScreen(); break;
+      case 5: await intAI(); break;
+      case 6: await withSpinner("Checking status", () => cmdStatus()); await pauseScreen(); break;
+      case 7:
         clearAuth();
         log(green("  Logged out."));
-        log(dim(`  Run ${REPO} or \`nova login\` to come back.`));
+        log(dim(`  Run \`nova login\` to come back.`));
         return;
-      case 6:
+      case 8:
         log(green("  Goodbye."));
         return;
     }
@@ -844,7 +1221,10 @@ async function interactiveShell() {
 }
 
 async function intMailbox() {
-  const messages = await withSpinner("Loading inbox", () => listMessagesForPicker());
+  const folders = await withSpinner("Loading inbox", () => getFolders());
+  const inbox = folders.find((f) => f.type === "inbox") || folders[0];
+  const page = await withSpinner("Loading messages", () => listPage(inbox.id, { limit: 100 }));
+  const messages = page.messages;
   if (messages.length === 0) {
     log(dim("  Inbox is empty."));
     await pauseScreen();
@@ -852,20 +1232,32 @@ async function intMailbox() {
   }
   const labels = messages.map((m) => {
     const t = timeAgo(m.timestamp);
-    const s = String(m.sender || "").padEnd(26, " ").slice(0, 26);
-    return `${m.flags === 0 ? "● " : "  "}${s} ${t.padStart(8)}  ·  ${String(m.preview || "").slice(0, 28)}`;
+    const s = truncate(displaySender(m), 26);
+    const st = (m.flags & 2) === 2 ? "â˜… " : "  ";
+    return `${(m.flags & 1) === 0 ? "â—" : " "} ${st}${padEndW(s, 26)} ${padStartW(t, 8)}  Â·  ${truncate(sanitize(m.subject || m.preview || ""), 30)}`;
   });
-  const idx = await choose(labels, "Inbox — pick a message");
+  const idx = await choose(labels, "Inbox â€” pick a message");
   if (idx < 0) return;
-  await cmdRead(messages[idx].id);
+  await cmdRead(messages[idx].id, { markRead: false });
   await pauseScreen();
 }
 
 async function intRead() {
-  const id = await readLine("  Message id (or full subject text):  ");
+  const id = await readLine("  Message id (or short id):  ");
   if (!id.trim()) return;
   try {
     await withSpinner("Fetching message", () => cmdRead(id.trim()));
+  } catch (e) {
+    err(e.message);
+  }
+  await pauseScreen();
+}
+
+async function intSearch() {
+  const q = await readLine("  Search:  ");
+  if (!q.trim()) return;
+  try {
+    await withSpinner("Searching", () => cmdSearch(q.trim()));
   } catch (e) {
     err(e.message);
   }
@@ -879,7 +1271,7 @@ async function intSend() {
   log(dim("  Body (leave a blank line to finish):"));
   const body = await readMultiLine();
   if (!body.trim()) {
-    const y = await confirm("  Empty body — send anyway?");
+    const y = await confirm("  Empty body â€” send anyway?");
     if (!y) return;
   }
   try {
@@ -901,18 +1293,13 @@ async function readMultiLine() {
   return lines.join("\n");
 }
 
-async function confirm(prompt) {
-  const a = await choose(["Yes", "No"], prompt);
-  return a === 0;
-}
-
 async function intAI() {
   aiBanner();
   const ai = getAI();
   const cfg = readConfig();
 
   const items = [
-    "Set up / change an AI provider (OpenAI · Anthropic · NVIDIA)",
+    "Set up / change an AI provider (OpenAI Â· Anthropic Â· NVIDIA)",
     "Test your provider key (calls their API)",
     "Get the master prompt for your agent",
     "Get a curl command to connect your provider",
@@ -920,25 +1307,21 @@ async function intAI() {
     "Disable the AI bridge",
     "Back",
   ];
-  const choice = await choose(items, "AI agent — experimental");
-  if (choice <= 0) {
-    // Set up provider
-    const provNames = Object.keys(AI_PROVIDERS).map((k) => `${AI_PROVIDERS[k].label}`);
+  const choice = await choose(items, "AI agent â€” experimental");
+  if (choice === 0) {
+    const provNames = Object.keys(AI_PROVIDERS).map((k) => AI_PROVIDERS[k].label);
     const pIdx = await choose(provNames, "Choose a provider");
     if (pIdx < 0) return;
     const provider = Object.keys(AI_PROVIDERS)[pIdx];
-    const key = await readLine(`  ${AI_PROVIDERS[provider].label} API key (hidden):  `, { echo: (s) => "•".repeat(s.length) });
+    const key = await readLine(`  ${AI_PROVIDERS[provider].label} API key (hidden):  `, { echo: (s) => "â€¢".repeat(s.length) });
     if (!key.trim()) { log(dim("  Aborted.")); return; }
-    ai.provider = provider;
-    ai.key = key.trim();
-    cfg.ai = ai;
-    writeConfig(cfg);
-    log(green("  Saved. ") + dim("Your key stays in local config (~/.nova/config.json)."));
+    saveAi(provider, key.trim());
+    log(green("  Saved. ") + dim("Your key is encrypted at rest in ~/.nova/config.json."));
     await pauseScreen();
     return;
   }
   if (choice === 1) {
-    if (!ai.provider || !ai.key) { err("No provider configured yet — choose 'Set up' first."); return; }
+    if (!ai.provider || !ai.key) { err("No provider configured yet â€” choose 'Set up' first."); return; }
     try {
       await withSpinner(`Testing ${AI_PROVIDERS[ai.provider].label} key`, () => aiTest(ai.provider, ai.key));
       log(green("  Key works."));
@@ -953,7 +1336,7 @@ async function intAI() {
     try {
       const s = await aiSettingsFromServer();
       aiToken = s.token_prefix ? `...${s.token_prefix.slice(2)}` : "";
-    } catch {}
+    } catch { /* ignore */ }
     log("\n" + aiMasterPrompt(cfg, aiToken || "<your-ai-token>"));
     await pauseScreen();
     return;
@@ -968,12 +1351,12 @@ async function intAI() {
     try {
       const s = await aiSettingsFromServer();
       const now = s.auto_approve === 1 ? 0 : 1;
-      await fetch(`${(cfg.base || DEFAULT_BASE).replace(/\/$/, "")}/api/ai/auto-approve`, {
+      await fetchT(`${currentBase()}/api/ai/auto-approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}`, "User-Agent": UA },
         body: JSON.stringify({ auto_approve: now }),
       });
-      log(now === 1 ? yellow("  Auto-approve ON. AI drafts send immediately — use with care.") : green("  Auto-approve OFF (manual review)."));
+      log(now === 1 ? yellow("  Auto-approve ON. AI drafts send immediately â€” use with care.") : green("  Auto-approve OFF (manual review)."));
     } catch (e) {
       err(e.message);
     }
@@ -982,9 +1365,9 @@ async function intAI() {
   }
   if (choice === 5) {
     try {
-      await fetch(`${(cfg.base || DEFAULT_BASE).replace(/\/$/, "")}/api/ai/disable`, {
+      await fetchT(`${currentBase()}/api/ai/disable`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${cfg.token}` },
+        headers: { Authorization: `Bearer ${getToken()}`, "User-Agent": UA },
       });
       log(green("  AI bridge disabled. Token revoked."));
     } catch (e) {
@@ -994,70 +1377,102 @@ async function intAI() {
     return;
   }
   // choice 6 = back
-  return;
 }
 
 /* ------------------------------------------------------------------ *
- *  Parse args + dispatch
+ *  Arg parsing + dispatch
  * ------------------------------------------------------------------ */
-function parseFlag(args, names) {
-  for (let i = 0; i < args.length; i++) {
-    for (const n of names) {
-      if (args[i] === n) return args[i + 1];
-      if (args[i] && args[i].startsWith(n + "=")) return args[i].slice(n.length + 1);
+const VALUE_FLAGS = new Set(["--to", "-t", "--subject", "-s", "--body", "-b", "--message", "-m", "--body-file", "--file", "--cc", "--bcc", "--base", "--api", "--limit", "-n", "--folder", "-f"]);
+const BOOL_FLAGS = new Set(["--no-color", "--json", "--html", "--permanent", "--all", "--no-mark-read", "-h", "--help", "-v", "--version"]);
+
+function parseArgs(argv) {
+  const flags = {};
+  const pos = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--") && a.includes("=")) {
+      const eq = a.indexOf("=");
+      flags[a.slice(0, eq)] = a.slice(eq + 1);
+      continue;
     }
+    if (VALUE_FLAGS.has(a)) { flags[a] = argv[++i]; continue; }
+    if (BOOL_FLAGS.has(a)) { flags[a] = true; continue; }
+    if (a.startsWith("-") && a.length > 1) { flags[a] = true; continue; }
+    pos.push(a);
   }
-  return undefined;
+  return { flags, pos };
+}
+
+function readAllStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) { resolve(""); return; }
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (d) => { data += d; });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.resume();
+  });
 }
 
 const HELP = `
-${KEY} ${bold(APP_NAME + " CLI")}  v${VERSION}   ·   Open source: ${REPO}
+${KEY} ${bold(APP_NAME + " CLI")}  v${VERSION}   Â·   Open source: ${REPO}
 
 ${bold("Usage:")}
   nova                       Open the interactive menu
   nova <command> [options]   Run a one-shot command
 
 ${bold("Commands:")}
-  login                     Sign in with your browser
-  logout                    Remove the saved session
-  mailbox [folder]          List messages (default: Inbox)
-  read <message-id>         Show a message
-  send --to A --subject S --body B    Send a message
-  delete <message-id>       Move a message to trash
-  status                    Show account + connection status
-  ai                        AI agent helpers (EXPERIMENTAL · NOT RECOMMENDED)
-  version                   Show CLI version
-  update                    Check for the latest version
-  help                      Show this help
+  login                      Sign in with your browser
+  logout                     Remove the saved session
+  mailbox [folder]           List messages (default: Inbox)
+  folders                    List folders + unread counts
+  read <message-id>          Show a message (marks it read; --no-mark-read to skip)
+  send --to A --subject S --body B [--cc C --bcc D] [--html]
+  search <query>             Search messages
+  mark <id> read|unread|star|unstar
+  move <id> <folder>         Move a message to a folder
+  delete <message-id> [--permanent]   Move to trash (or delete for good)
+  status                     Show account + connection status
+  whoami                     Show your account details
+  ai                         AI agent helpers (EXPERIMENTAL Â· NOT RECOMMENDED)
+  version                    Show CLI version
+  update                     Check for the latest version
+  help                       Show this help
 
-${bold("Global options:")}
-  --base <url>              Custom NOVA base URL (default ${DEFAULT_BASE})
-  --no-color                Disable colors
+${bold("Options:")}
+  --base <url>               Custom NOVA base URL (default ${DEFAULT_BASE})
+  --limit <n>                Rows for mailbox/search (default 25)
+  --all                      Fetch every page (mailbox)
+  --json                     Machine-readable output
+  --body-file <path>         Read the body from a file ("-" = stdin)
+  --no-color                 Disable colors
 
 ${bold("AI (experimental, not recommended):")}
-  nova ai setup             Choose OpenAI / Anthropic / NVIDIA + enter API key
-  nova ai test              Verify your provider key
-  nova ai prompt            Print the master prompt for your BYO agent
-  nova ai curl [provider]   Print a ready-to-run curl connect command
+  nova ai setup              Choose OpenAI / Anthropic / NVIDIA + enter API key
+  nova ai test               Verify your provider key
+  nova ai prompt             Print the master prompt for your BYO agent
+  nova ai curl [provider]    Print a ready-to-run curl connect command
+
+${bold("Security:")}
+  Secrets are encrypted at rest (AES-256-GCM) in ~/.nova/config.json;
+  the wrapping key lives in ~/.nova/key (mode 0600). Sign out with \`nova logout\`.
 `;
 
 async function main() {
-  const argv = process.argv.slice(2);
-  const raw = argv[0];
+  const { flags, pos } = parseArgs(process.argv.slice(2));
 
-  const baseOverride = parseFlag(argv, ["--base", "--api"]);
+  if (flags["--no-color"]) process.env.NO_COLOR = "1";
+
+  const baseOverride = flags["--base"] || flags["--api"];
   if (baseOverride) {
-    const cfg = readConfig();
-    cfg.base = baseOverride;
-    writeConfig(cfg);
+    try { setBase(baseOverride); }
+    catch (e) { err(e.message); return; }
   }
-  if (argv.includes("--no-color")) process.env.NO_COLOR = "1";
 
-  // Interactive entry: `nova` with no args (or `nova run` / `nova menu`).
-  if (!raw || raw === "run" || raw === "menu" || raw === "interactive") {
-    try {
-      requireAuth();
-    } catch {
+  const cmd = pos[0];
+
+  if (!cmd || cmd === "run" || cmd === "menu" || cmd === "interactive") {
+    try { requireAuth(); } catch {
       bootScreenNonInteractive("Interactive mode");
       const ok = await login();
       if (!ok) return;
@@ -1066,32 +1481,27 @@ async function main() {
     return;
   }
 
-  const cmd = raw;
+  if (cmd === "help" || flags["-h"] || flags["--help"]) { log(HELP.trim()); return; }
+  if (cmd === "version" || flags["-v"] || flags["--version"]) { cmdVersion(); return; }
 
-  if (cmd === "help" || cmd === "-h" || cmd === "--help") { log(HELP.trim()); return; }
-  if (cmd === "version" || cmd === "-v" || cmd === "--version") { cmdVersion(); return; }
-
-  const authCommands = new Set(["mailbox", "read", "send", "delete", "status"]);
+  const authCommands = new Set(["mailbox", "folders", "read", "send", "search", "mark", "move", "delete", "status", "whoami"]);
   const known = new Set([...authCommands, "login", "logout", "update", "ai"]);
-  if (!known.has(cmd)) {
-    err(`Unknown command: ${cmd}. Run \`nova --help\`.`);
-    return;
-  }
+  if (!known.has(cmd)) { err(`Unknown command: ${cmd}. Run \`nova --help\`.`); return; }
 
-  if (authCommands.has(cmd)) {
-    try { requireAuth(); } catch { return; }
-  }
+  const json = !!flags["--json"];
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  const spin = (label, fn) => (json || !interactive ? fn() : withSpinner(label, fn));
 
-  bootScreenNonInteractive("Connected · type `nova` for the interactive menu");
+  if (authCommands.has(cmd)) { try { requireAuth(); } catch { return; } }
+
+  if (!json) bootScreenNonInteractive("Connected Â· type `nova` for the interactive menu");
 
   try {
     switch (cmd) {
       case "login": {
         const ok = await login();
         if (ok) {
-          const cfg = readConfig();
-          log(green("  Authenticated as ") + bold(cfg.email || "your account"));
-          log("");
+          log(green("  Authenticated as ") + bold(readConfig().email || "your account"));
           log(dim("  Run `nova` for the interactive menu."));
         } else {
           err("Sign-in incomplete.");
@@ -1099,73 +1509,106 @@ async function main() {
         break;
       }
       case "logout": { clearAuth(); log(green("  Logged out.")); break; }
-      case "mailbox": await withSpinner("Loading mailbox", () => cmdMailbox(argv[1])); break;
+      case "mailbox": {
+        const folder = flags["--folder"] || flags["-f"] || pos[1];
+        const limit = parseInt(flags["--limit"] || flags["-n"] || "25", 10) || 25;
+        await spin("Loading mailbox", () => cmdMailbox(folder, { all: !!flags["--all"], limit, json }));
+        break;
+      }
+      case "folders": await spin("Loading folders", () => cmdFolders({ json })); break;
       case "read": {
-        if (!argv[1]) return err("Usage: nova read <message-id>");
-        await withSpinner("Fetching message", () => cmdRead(argv[1]));
+        const id = pos[1];
+        if (!id) { err("Usage: nova read <message-id>"); break; }
+        await spin("Fetching message", () => cmdRead(id, { json, markRead: !flags["--no-mark-read"] }));
         break;
       }
       case "send": {
-        const to = parseFlag(argv, ["--to", "-t"]);
-        const subject = parseFlag(argv, ["--subject", "-s"]);
-        const body = parseFlag(argv, ["--body", "-b"]) || parseFlag(argv, ["--message", "-m"]);
-        await withSpinner("Sending", () => cmdSend(to, subject, body));
+        const to = flags["--to"] || flags["-t"] || pos[1];
+        const subject = flags["--subject"] || flags["-s"] || pos[2];
+        let body = flags["--body"] || flags["-b"] || flags["--message"] || flags["-m"];
+        const bodyFile = flags["--body-file"] || flags["--file"];
+        if (bodyFile) {
+          body = bodyFile === "-" ? await readAllStdin() : fs.readFileSync(bodyFile, "utf8");
+        } else if (body === undefined && !process.stdin.isTTY) {
+          body = await readAllStdin();
+        }
+        await spin("Sending", () => cmdSend(to, subject, body, {
+          cc: flags["--cc"], bcc: flags["--bcc"], html: !!flags["--html"],
+        }));
+        break;
+      }
+      case "search": {
+        const q = pos.slice(1).join(" ") || flags["--folder"];
+        const limit = parseInt(flags["--limit"] || flags["-n"] || "25", 10) || 25;
+        await spin("Searching", () => cmdSearch(q, { json, limit }));
+        break;
+      }
+      case "mark": {
+        const id = pos[1];
+        const action = pos[2];
+        if (!id || !action) { err("Usage: nova mark <id> read|unread|star|unstar"); break; }
+        await spin("Updating", () => cmdMark(id, action));
+        break;
+      }
+      case "move": {
+        const id = pos[1];
+        const folder = pos[2];
+        if (!id || !folder) { err("Usage: nova move <id> <folder>"); break; }
+        await spin("Moving", () => cmdMove(id, folder));
         break;
       }
       case "delete": {
-        if (!argv[1]) return err("Usage: nova delete <message-id>");
-        await withSpinner("Deleting", () => cmdDelete(argv[1]));
+        const id = pos[1];
+        if (!id) { err("Usage: nova delete <message-id> [--permanent]"); break; }
+        await spin("Deleting", () => cmdDelete(id, { permanent: !!flags["--permanent"] }));
         break;
       }
-      case "status": await withSpinner("Checking status", cmdStatus); break;
+      case "status": await spin("Checking status", () => cmdStatus({ json })); break;
+      case "whoami": await spin("Loading account", () => cmdWhoami({ json })); break;
       case "update": await cmdUpdate(); break;
       case "ai": {
-        const sub = argv[1] || "menu";
+        const sub = pos[1] || "menu";
         if (sub === "setup") {
           aiBanner();
-          const cfg = readConfig();
-          const provNames = Object.keys(AI_PROVIDERS).map((k) => `${AI_PROVIDERS[k].label}`);
+          const provNames = Object.keys(AI_PROVIDERS).map((k) => AI_PROVIDERS[k].label);
           const pIdx = await choose(provNames, "Choose a provider (experimental)");
           if (pIdx < 0) break;
           const provider = Object.keys(AI_PROVIDERS)[pIdx];
           const key = await readLine(`  ${AI_PROVIDERS[provider].label} API key:  `);
           if (!key.trim()) { log(dim("  Aborted.")); break; }
-          cfg.ai = { provider, key: key.trim() };
-          writeConfig(cfg);
-          log(green("  Saved."));
+          saveAi(provider, key.trim());
+          log(green("  Saved (encrypted at rest)."));
         } else if (sub === "test") {
           aiBanner();
           const ai = getAI();
-          if (!ai.provider || !ai.key) return err("No provider configured. Run `nova ai setup` first.");
+          if (!ai.provider || !ai.key) { err("No provider configured. Run `nova ai setup` first."); break; }
           try {
-            const out = await withSpinner(`Testing ${AI_PROVIDERS[ai.provider].label} key`, () => aiTest(ai.provider, ai.key));
+            const out = await spin(`Testing ${AI_PROVIDERS[ai.provider].label} key`, () => aiTest(ai.provider, ai.key));
             log(green("  Key works.") + (out ? dim(` (model said: ${out})`) : ""));
           } catch (e) { err(e.message); }
         } else if (sub === "prompt") {
           aiBanner();
-          const cfg = readConfig();
-          log("\n" + aiMasterPrompt(cfg, "<your-ai-token>") + "\n");
+          log("\n" + aiMasterPrompt(readConfig(), "<your-ai-token>") + "\n");
         } else if (sub === "curl") {
           aiBanner();
-          const cfg = readConfig();
           const ai = getAI();
-          const provider = argv[2] || ai.provider || "openai";
-          if (!AI_PROVIDERS[provider]) return err(`Unknown provider '${provider}'.`);
-          log("\n" + aiCurlCommand(cfg, provider, "[YOUR_SERVER_TOKEN]") + "\n");
+          const provider = pos[2] || ai.provider || "openai";
+          if (!AI_PROVIDERS[provider]) { err(`Unknown provider '${provider}'.`); break; }
+          log("\n" + aiCurlCommand(readConfig(), provider, "[YOUR_SERVER_TOKEN]") + "\n");
         } else {
           log(HELP.trim());
         }
         break;
       }
       default:
-        return err(`Unknown command: ${cmd}. Run \`nova --help\`.`);
+        err(`Unknown command: ${cmd}. Run \`nova --help\`.`);
     }
   } catch (e) {
-    if (e.message === "not-authenticated") return;
-    err(String(e && e.message ? e.message : e));
+    if (e && e.message === "not-authenticated") return;
+    err(e && e.message ? e.message : e);
   }
 
-  if (cmd !== "login" && !["ai"].includes(cmd)) checkForUpdates();
+  if (cmd !== "login" && cmd !== "ai" && !json) checkForUpdates();
 }
 
 main();

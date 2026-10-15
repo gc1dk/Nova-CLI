@@ -16,8 +16,11 @@ Read, send, and manage your encrypted inbox right from the terminal — no passw
 
 - **Interactive menu** — run `nova` with no arguments for a full-screen, arrow-key TUI (Inbox · Read · Compose · Status · Log out). Long lists paginate with **PgUp/PgDn**, **Home/End**, and **1–9** quick-pick; prompts support **←/→** cursor editing.
 - **Robust key input** — escape sequences are buffered and parsed per-token, so arrow keys keep working even when a terminal splits a sequence across network chunks (no accidental menu exits).
-- **One-shot commands** — `nova mailbox`, `nova read`, `nova send`, `nova delete` for scripting.
-- **Browser-based auth** — `nova login` opens your browser. After you sign in, NOVA sends a short-lived session token to `127.0.0.1` (your own machine) only.
+- **One-shot commands** — `nova mailbox`, `nova read`, `nova send`, `nova delete`, plus `folders`, `search`, `mark`, `move`, and `whoami` for scripting.
+- **Scriptable output** — add `--json` to any list/read command, paginate with `--all`/`--limit`, and send from a file or stdin with `--body-file -`.
+- **Encrypted vault** — your session token and any AI provider keys are stored **encrypted at rest** (AES-256-GCM) in `~/.nova/config.json`; the local key lives in `~/.nova/key` (owner-only, `0600`).
+- **Terminal-safe rendering** — untrusted mail is stripped of ANSI/control sequences and width-aware truncated, so a hostile message can't break your terminal or inject escapes.
+- **Browser-based auth** — `nova login` opens your browser. After you sign in, NOVA sends a short-lived session token to `127.0.0.1` (your own machine) only, verified with an anti-CSRF `state`.
 - **Custom boot screen** — animated ASCII `NOVA` logo, clean interface, no bloat.
 - **Auto-updating** — `nova update` checks for the latest build.
 - **Optional AI bridge** — connect your *own* model provider (OpenAI, Anthropic, NVIDIA) to help draft replies. **Experimental · NOT recommended** (see below).
@@ -72,11 +75,19 @@ nova login          # sign in with your browser
 nova mailbox        # list your inbox
 nova read <id>      # read a message
 nova send --to a@b.com --subject "Hi" --body "Hello"
+nova search "invoice"        # search your mail
+nova mark <id> star          # star / unstar / read / unread
+nova move <id> archive       # move to a folder
+nova folders        # list folders
 nova delete <id>    # move a message to trash
+nova whoami         # show the signed-in account
 nova status         # account + connection status
 nova version        # show the CLI version
 nova help           # full help
 ```
+
+Add `--json` for machine-readable output, `--all` to fetch every page, or `--no-color`
+to disable colours.
 
 ---
 
@@ -97,8 +108,8 @@ nova ai prompt      # print the master prompt for your agent
 nova ai curl        # print a ready-to-run curl connect command
 ```
 
-Your API key is stored in a local config file (`~/.nova/config.json`) and is never uploaded
-anywhere — it's only used to call the provider's API from your machine.
+Your API key is stored **encrypted at rest** (AES-256-GCM) in `~/.nova/config.json` and is never
+uploaded anywhere — it's only used to call the provider's API from your machine.
 
 Supported providers:
 
@@ -113,9 +124,18 @@ Supported providers:
 ## 🔒 Security
 
 - **Auth** — you never type a password into the terminal. The session token is delivered to
-  `http://127.0.0.1:<port>` on your machine only.
-- **Stored config** — session token and any API keys live in `~/.nova/config.json` on your disk,
-  with restrictive intent. Delete the file to sign out fully.
+  `http://127.0.0.1:<port>` on your machine only, and the callback is checked against a random
+  anti-CSRF `state` that the CLI generated for that login.
+- **Encrypted at rest** — your session token and any AI provider keys are encrypted with
+  **AES-256-GCM** before being written to `~/.nova/config.json`. The encryption key is a random
+  256-bit value stored in `~/.nova/key` with owner-only permissions (`0600`). Legacy plaintext
+  configs are migrated automatically on first run.
+- **HTTPS enforced** — the CLI refuses to send credentials over plain `http://` unless the host
+  is loopback (`localhost` / `127.0.0.1`).
+- **Request timeouts** — every network call has a hard timeout, so a dead or slow network can
+  never hang the CLI.
+- **Terminal-safe** — untrusted content is sanitized (ANSI/control sequences stripped) before
+  display, so a message can't corrupt your terminal.
 - **No telemetry** — the CLI makes no calls other than to NOVA's own API and your chosen provider.
 - **Open source** — read the code; there are no hidden network calls.
 
@@ -125,16 +145,25 @@ Supported providers:
 
 Config file: `~/.nova/config.json`
 
+Non-secret settings are stored as plain text; **secrets are encrypted** into a single `secrets`
+field (`v1:<iv>.<ciphertext+tag>`, AES-256-GCM) using the key in `~/.nova/key`:
+
 ```json
 {
-  "token": "...",
-  "email": "you@nova-email.com",
+  "v": 2,
   "base": "https://nova-email.com",
-  "ai": { "provider": "openai", "key": "..." }
+  "email": "you@nova-email.com",
+  "ai": { "provider": "openai" },
+  "secrets": "v1:0f3a...==.8c1b...=="
 }
 ```
 
-You can point the CLI at a self-hosted NOVA instance with `--base <url>`.
+> Older configs that stored a plaintext `token` and/or `ai.key` are migrated to the encrypted
+> `secrets` field automatically the first time you run a command.
+
+- `~/.nova/key` — the random 256-bit encryption key (owner-only, `0600`). To sign out *and*
+  discard secrets, delete both `~/.nova/config.json` and `~/.nova/key`.
+- You can point the CLI at a self-hosted NOVA instance with `--base <url>`.
 
 ---
 
